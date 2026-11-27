@@ -6,7 +6,7 @@ MyADB is a KernelSU / Magisk / APatch module that controls the TCP port of the s
 
 Source repository: <https://github.com/cool-chill/myadb>
 
-Latest release: <https://github.com/cool-chill/myadb/releases/tag/v1.0.0>
+Latest release: <https://github.com/cool-chill/myadb/releases/tag/v1.1.0>
 
 ## Contents
 
@@ -37,12 +37,12 @@ Latest release: <https://github.com/cool-chill/myadb/releases/tag/v1.0.0>
 - Port occupancy check: refuse the operation and report the owner uid / pid.
 - Rollback: snapshot before changes, restore the previous port and `adb_enabled` if adbd fails.
 - Idempotent: no adbd restart when the port is unchanged and already listening.
-- Key management: import, backup, restore and clear `/data/misc/adb/adb_keys`; clearing creates a backup first.
-- Authorized devices: list ADB key comments and MD5 fingerprints, delete a single authorization, never expose key material.
-- USB control: toggle USB debugging, developer options, and charging / MTP / PTP / RNDIS modes.
-- Ongoing notification: publish an ADB status notification every 15 seconds with port, listener result and device IP.
-- Diagnostics and logs: `doctor` reports the environment, logs roll at 200 lines.
-- Bilingual WebUI, Chinese by default, switching applies instantly.
+- Key management: import, backup, restore and clear `/data/misc/adb/adb_keys`; removals also clear the framework cache so old keys do not come back.
+- Authorized devices: list ADB key comments and MD5 fingerprints, durably delete a single or all authorizations, never expose key material.
+- USB control: toggle USB debugging, developer options and wireless debugging; choose charging / MTP / PTP / NCM / RNDIS / MIDI and set the authorization lifetime.
+- No notification noise: no ongoing notification is posted; status lives in the manager description and the WebUI.
+- Diagnostics and logs: `doctor` reports the environment, temporary key store and wireless debugging state; logs roll at 200 lines.
+- Bilingual WebUI, Chinese by default; Home and Settings use the `snapshot` command to reduce CLI calls.
 
 ## Compatibility
 
@@ -53,7 +53,7 @@ Latest release: <https://github.com/cool-chill/myadb/releases/tag/v1.0.0>
 | WebUI | Manager must support module `webroot` (KernelSU manager or MMRL) |
 | Without WebUI | `action.sh` prints the status JSON; the CLI still exposes every feature |
 | WebView | Baseline Chromium 111; older versions get a warning banner |
-| Verified | Pixel 7 / Android 17 / KernelSU 3.2.5 (with WebUI); Android 11 / Magisk (CLI and notifications); Linux fake `/proc` integration tests and WebUI mock tests |
+| Verified | Pixel 7 / Android 17 / KernelSU 3.2.5 (with WebUI); Android 11 / Magisk (CLI and USB); Linux fake `/proc` integration tests and WebUI mock tests |
 
 ## Installation
 
@@ -100,10 +100,9 @@ adb devices
 |---|---|
 | Language | Chinese / English, written to the `language` key |
 | Behavior | `toggle_adb_enabled`, `restore_adb_enabled` |
-| Authorized devices | list key comments and MD5 fingerprints; delete a single authorization |
-| ADB keys | import, backup, restore, clear; clearing creates a backup first |
-| USB | USB debugging, developer options, charging / MTP / PTP / RNDIS |
-| Ongoing notification | refresh ADB status every 15 seconds; tapping does nothing, open the WebUI from the manager |
+| Authorized devices | list key comments and MD5 fingerprints; delete one or revoke all |
+| ADB keys | import, backup, restore, clear; results are shown in place, restore backs up first |
+| USB | USB debugging, developer options, wireless debugging, authorization lifetime, charging / MTP / PTP / NCM / RNDIS / MIDI |
 | About | version, repository URL, license |
 
 State values:
@@ -129,14 +128,15 @@ Executable inside the module: `/data/adb/modules/myadb/bin/adbctl`
 | `adbctl boot on\|off [--port 6000]` | Configure start-on-boot |
 | `adbctl doctor --json` | Environment diagnostics |
 | `adbctl log -n 50` | Recent logs (JSON array) |
+| `adbctl snapshot --with status,config[,usb,keys]` | Read several sections in one call |
 | `adbctl keys list` | List authorized devices (comments and fingerprints, no key material) |
-| `adbctl keys remove <ID>` | Remove one authorization (creates a backup) |
-| `adbctl keys import\|backup\|restore\|clear [PATH]` | Key management |
-| `adbctl usb status` | USB debugging, developer options and current USB mode |
-| `adbctl usb set adb\|developer on\|off` | Toggle USB debugging or developer options |
-| `adbctl usb mode charging\|mtp\|ptp\|rndis\|midi` | Change the USB mode |
-| `adbctl notify` | Publish one status notification now |
-| `adbctl notify-daemon` | Start or stop the notification daemon |
+| `adbctl keys remove <ID>` | Durably remove one authorization (backup first, may return 16) |
+| `adbctl keys import\|backup\|restore\|clear [PATH]` | Key management; import/restore sync the framework cache |
+| `adbctl usb status` | USB debugging, developer options, wireless debugging, USB mode and authorization lifetime |
+| `adbctl usb set adb\|developer\|wireless on\|off` | Toggle USB debugging, developer options or wireless debugging |
+| `adbctl usb mode charging\|mtp\|ptp\|rndis\|ncm\|midi` | Change the USB mode; `rndis` tries NCM first |
+| `adbctl usb timeout 0\|7\|30` | Set the authorization lifetime; `0` never expires |
+| `adbctl cleanup-legacy-notify` | Internal command to stop the old notification daemon |
 | `adbctl config [get KEY\|set KEY VALUE]` | Read or update config |
 
 Common examples:
@@ -194,6 +194,7 @@ The CLI prints JSON and exit codes only. The WebUI renders localized messages fr
 | `13` | Root not granted |
 | `14` | Port outside `1024–65535` |
 | `15` | Other system error; see the log |
+| `16` | Keys were written but the framework authorization cache was not cleared; reboot to complete |
 
 ## Configuration
 
@@ -208,7 +209,6 @@ Keys and defaults:
 | `retry` | `3` | Boot retry count |
 | `retry_interval` | `10` | Retry interval (seconds) |
 | `language` | `zh` | `zh` / `en` |
-| `notification` | `true` | Run the ongoing status notification |
 
 Storage and precedence:
 
@@ -264,13 +264,15 @@ Import skips empty lines, comments and duplicates. Backup files are `600`; the s
 | `error_code=13` | Grant root in the manager and use `su -c` from a shell |
 | `error_code=14` | The port must be within `1024–65535` |
 | `error_code=15` | Check the log; common causes are property write failures or missing system commands |
+| `error_code=16` | Keys were written but the framework cache was not cleared; reboot and retry. `doctor` shows `adb_temp_keys.xml` |
 | WebUI is blank | Make sure the manager supports `webroot` and reinstall the module; confirm the build uses `base: './'` |
 | WebUI styles look broken | Check for the old WebView banner and update Android System WebView |
 | The PC cannot connect | Use the same LAN, verify the port, disable client isolation, and run `adb kill-server && adb start-server` on the PC |
 | MIUI / HyperOS / One UI | Properties may apply late; wait 30 seconds after boot and run `doctor` |
 | Connections drop after toggling | Restarting adbd is expected when the port changes |
 | ADB drops after changing USB mode | USB mode changes reset the USB interface; reconnect after enumeration |
-| Notification tap does nothing | Shell notifications cannot set a click action on Android 11+; open the WebUI from the manager |
+| Deleted authorization comes back | Make sure `keys remove` returned `durable=true`; reboot and retry when it returns 16 |
+| Wireless debugging conflicts with the module port | Both may share the ADB channel; keep only one active |
 | No automatic start after boot | Confirm `enabled=true` and inspect the `boot-apply` lines in the log |
 
 Diagnostics:
@@ -311,7 +313,7 @@ getprop service.adb.tcp.port
 ./scripts/build.sh
 ```
 
-`scripts/build.sh` runs `npm ci`, type checking, the i18n key check, the build, copies `core/adbctl.sh` to `module/bin/`, and writes `dist/myadb-v1.0.0.zip`.
+`scripts/build.sh` runs `npm ci`, type checking, the i18n key check, the build, copies `core/adbctl.sh` to `module/bin/`, and writes `dist/myadb-v1.1.0.zip`.
 
 Build only the WebUI:
 
@@ -376,7 +378,7 @@ Three principles:
 
 1. **One source of business logic**: `adbctl` is the only source of truth. `service.sh`, `boot-completed.sh`, `action.sh` and the WebUI all call it.
 2. **Measured state**: parse `/proc` and verify the adbd fd inode; never trust `getprop`.
-3. **Notifications are a side channel**: `service.sh` starts `notify-daemon`, which polls `status` every 15 seconds and posts a shell notification. State decisions still come from `adbctl`.
+3. **Snapshots and cache**: the WebUI reads several sections through `adbctl snapshot` and keeps a short 1.5 second cache that is invalidated after every mutation. The module posts no ongoing notification.
 
 Listener verification:
 
@@ -408,7 +410,7 @@ myadb/
 ## Security
 
 - A plaintext ADB port exposes debugging access; use it only on trusted networks.
-- The ongoing notification is posted by shell and may appear as "Shell"; it is display-only and has no click action.
+- Avoid enabling wireless debugging and the module TCP port at the same time; they may contend for the ADB channel.
 - Prefer a non-default port and avoid public Wi-Fi.
 - ADB keys are credentials; protect backup files.
 - MyADB does not provide anti-detection, hiding or risk-control bypass, and never modifies `/system` or SELinux policy.

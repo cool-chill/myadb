@@ -38,6 +38,8 @@ esac
 
 PROC_ROOT=${MYADB_PROC_ROOT:-/proc}
 ADB_KEYS=${MYADB_KEYS:-/data/misc/adb/adb_keys}
+ADB_TEMP_KEYS=${MYADB_TEMP_KEYS:-"$(dirname "$ADB_KEYS")/adb_temp_keys.xml"}
+KEY_CLEAR_TICKS=${MYADB_KEY_CLEAR_WAIT:-10}
 
 CONFIG_FILE="$MODDIR/config.conf"
 CFG_CACHE=""
@@ -189,7 +191,6 @@ cfg_default() {
     retry) printf '3' ;;
     retry_interval) printf '10' ;;
     language) printf 'zh' ;;
-    notification) printf 'true' ;;
     *) printf '' ;;
   esac
 }
@@ -221,7 +222,7 @@ cfg_get() {
 cfg_validate() {
   case "$1" in
     port) is_port "$2" ;;
-    enabled | toggle_adb_enabled | restore_adb_enabled | notification) is_bool "$2" ;;
+    enabled | toggle_adb_enabled | restore_adb_enabled) is_bool "$2" ;;
     retry) is_int_range "$2" 1 10 ;;
     retry_interval) is_int_range "$2" 1 120 ;;
     language) [ "$2" = "zh" ] || [ "$2" = "en" ] ;;
@@ -471,7 +472,7 @@ refresh_desc() {
 # Commands
 # ---------------------------------------------------------------------------
 
-cmd_status() {
+status_json() {
   cfg_init_cache
   _st_la=$(adb_getprop service.adb.listen_addrs)
   _st_prop=$(adb_getprop service.adb.tcp.port)
@@ -521,10 +522,16 @@ cmd_status() {
     _st_err=15
   fi
 
-  printf '{"schema":%s,"state":"%s","port":%s,"listening":%s,"listener_uid":%s,"listener_pid":%s,"adbd_running":%s,"adb_enabled":%s,"listen_addrs":%s,"boot_enabled":%s,"ips":%s,"error_code":%s,"timestamp":%s}\n' \
+  printf '{"schema":%s,"state":"%s","port":%s,"listening":%s,"listener_uid":%s,"listener_pid":%s,"adbd_running":%s,"adb_enabled":%s,"listen_addrs":%s,"boot_enabled":%s,"ips":%s,"error_code":%s,"timestamp":%s}' \
     "$SCHEMA" "$_st_state" "$_st_port" "$(jbool "$_st_listening")" "$_st_uid" "$_st_pid" \
     "$(jbool "$_st_adbd")" "$_st_adbe" "$(jstr "$_st_la")" "$(jbool "$_st_boot")" \
     "$(ips_json)" "$_st_err" "$(now_ts)"
+  return 0
+}
+
+cmd_status() {
+  status_json
+  printf '\n'
   return 0
 }
 
@@ -678,6 +685,7 @@ cmd_set_port() {
 
   cfg_set port "$_sp_port"
   log_line "set-port port=$_sp_port applied=deferred"
+  refresh_desc "$_sp_port"
   printf '{"ok":true,"error_code":0,"state":"IDLE","target_port":%s}\n' "$_sp_port"
   return 0
 }
@@ -787,18 +795,33 @@ cmd_doctor() {
     [ -n "$_dr_keys_count" ] || _dr_keys_count=0
   fi
 
+  _dr_temp_exists=false
+  _dr_temp_count=0
+  if [ -f "$ADB_TEMP_KEYS" ]; then
+    _dr_temp_exists=true
+    _dr_temp_count=$(grep -c -v '^[[:space:]]*$' "$ADB_TEMP_KEYS" 2>/dev/null | tr -d ' ')
+    [ -n "$_dr_temp_count" ] || _dr_temp_count=0
+  fi
+
+  _dr_wifi=$(settings_bool adb_wifi_enabled)
+
   _dr_warn=''
   [ -n "$_dr_la" ] && _dr_warn='"listen_addrs already set"'
   if [ "$_dr_occupied" = "true" ]; then
     [ -n "$_dr_warn" ] && _dr_warn="$_dr_warn,"
     _dr_warn="$_dr_warn\"port occupied\""
   fi
+  if [ "$_dr_wifi" = "1" ] && is_port "$_dr_prop" 2>/dev/null; then
+    [ -n "$_dr_warn" ] && _dr_warn="$_dr_warn,"
+    _dr_warn="$_dr_warn\"wireless debugging enabled\""
+  fi
 
-  printf '{"schema":%s,"root":%s,"model":%s,"android":%s,"selinux":%s,"adbd_running":%s,"adbd_pids":%s,"listen_addrs":%s,"tcp_port_prop":%s,"adb_enabled":%s,"config_port":%s,"listening":%s,"listener_uid":%s,"listener_pid":%s,"port_occupied":%s,"keys_exists":%s,"keys_count":%s,"ips":%s,"warnings":[%s],"timestamp":%s}\n' \
+  printf '{"schema":%s,"root":%s,"model":%s,"android":%s,"selinux":%s,"adbd_running":%s,"adbd_pids":%s,"listen_addrs":%s,"tcp_port_prop":%s,"adb_enabled":%s,"config_port":%s,"listening":%s,"listener_uid":%s,"listener_pid":%s,"port_occupied":%s,"keys_exists":%s,"keys_count":%s,"temp_keys_exists":%s,"temp_keys_count":%s,"adb_wifi_enabled":%s,"ips":%s,"warnings":[%s],"timestamp":%s}\n' \
     "$SCHEMA" "$_dr_root" "$(jstr "$_dr_model")" "$(jstr "$_dr_android")" "$(jstr "$_dr_selinux")" \
     "$(jbool "$_dr_adbd")" "$_dr_pids" "$(jstr "$_dr_la")" "$(jstr "$_dr_prop")" "$_dr_adbe" \
     "$_dr_cfgport" "$(jbool "$_dr_listening")" "$_dr_uid" "$_dr_pid" "$_dr_occupied" \
-    "$_dr_keys_exists" "$_dr_keys_count" "$(ips_json)" "$_dr_warn" "$(now_ts)"
+    "$_dr_keys_exists" "$_dr_keys_count" "$_dr_temp_exists" "$_dr_temp_count" "$_dr_wifi" \
+    "$(ips_json)" "$_dr_warn" "$(now_ts)"
   return 0
 }
 
@@ -839,6 +862,87 @@ cmd_log() {
 keys_chmod() {
   chmod 640 "$ADB_KEYS" 2>/dev/null || true
   chown system:shell "$ADB_KEYS" 2>/dev/null || true
+}
+
+keys_restart_adbd() {
+  if adbd_running; then
+    adb_setprop ctl.restart adbd && return 0
+  else
+    adb_setprop ctl.start adbd && return 0
+  fi
+  return 1
+}
+
+# Ask the framework to forget its in-memory and temporary debugging keys.
+# IAdbManager.clearDebuggingKeys() is transaction 3 on android.debug.IAdbManager.
+framework_clear_keys() {
+  command -v service >/dev/null 2>&1 || return 1
+  _fck_out=$(service call adb 3 2>&1) || return 1
+  case "$_fck_out" in
+    *Exception* | *Error* | *"does not exist"*) return 1 ;;
+    *"Result: Parcel"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# clearDebuggingKeys() runs asynchronously. Wait for adb_temp_keys.xml to go
+# away before writing our target set, otherwise the async delete can remove it.
+keys_wait_clear() {
+  _kwc_max=$KEY_CLEAR_TICKS
+  case "$_kwc_max" in
+    '' | *[!0-9]*) _kwc_max=10 ;;
+  esac
+  [ "$_kwc_max" -gt 0 ] 2>/dev/null || return 0
+  _kwc_n=0
+  if [ -e "$ADB_TEMP_KEYS" ]; then
+    while [ -e "$ADB_TEMP_KEYS" ] && [ "$_kwc_n" -lt "$_kwc_max" ]; do
+      sleep 0.1 2>/dev/null || sleep 1
+      _kwc_n=$((_kwc_n + 1))
+    done
+    [ -e "$ADB_TEMP_KEYS" ] && return 1
+    return 0
+  fi
+  sleep 0.3 2>/dev/null || true
+  return 0
+}
+
+keys_write_atomic() {
+  _kwa_src=$1
+  [ -f "$_kwa_src" ] || return 1
+  mkdir -p "$(dirname "$ADB_KEYS")" 2>/dev/null || true
+  _kwa_tmp="$ADB_KEYS.$$.tmp"
+  cp "$_kwa_src" "$_kwa_tmp" 2>/dev/null || {
+    rm -f "$_kwa_tmp" 2>/dev/null || true
+    return 1
+  }
+  chmod 640 "$_kwa_tmp" 2>/dev/null || true
+  chown system:shell "$_kwa_tmp" 2>/dev/null || true
+  mv "$_kwa_tmp" "$ADB_KEYS" 2>/dev/null || {
+    rm -f "$_kwa_tmp" 2>/dev/null || true
+    return 1
+  }
+  keys_chmod
+  return 0
+}
+
+keys_backup_now() {
+  [ -f "$ADB_KEYS" ] || return 1
+  mkdir -p "$BACKUP_DIR" 2>/dev/null || return 1
+  _kbn="$BACKUP_DIR/adb_keys.$(date +%Y%m%d%H%M%S 2>/dev/null).$$"
+  cp "$ADB_KEYS" "$_kbn" 2>/dev/null || return 1
+  chmod 600 "$_kbn" 2>/dev/null || true
+  printf '%s' "$_kbn"
+}
+
+# Returns 0 when the framework cleared its keys and the temp store settled.
+keys_sync_framework() {
+  framework_clear_keys || return 1
+  keys_wait_clear || return 1
+  return 0
+}
+
+keys_drop_temp_store() {
+  rm -f "$ADB_TEMP_KEYS" 2>/dev/null || true
 }
 
 key_line_parts() {
@@ -882,44 +986,50 @@ keys_line_id() {
   printf 'ID-%s' "$_kli_sum"
 }
 
+keys_array_json() {
+  if [ ! -f "$ADB_KEYS" ]; then
+    printf '[]'
+    return 0
+  fi
+  printf '['
+  _ka_first=1
+  _ka_index=0
+  while IFS= read -r _ka_line || [ -n "$_ka_line" ]; do
+    case "$_ka_line" in
+      '' | '#'*) continue ;;
+    esac
+    if ! keys_valid_line "$_ka_line"; then
+      continue
+    fi
+    _ka_index=$((_ka_index + 1))
+    _ka_id=$(keys_line_id "$_ka_line" 2>/dev/null) || _ka_id=''
+    [ -n "$_ka_id" ] || _ka_id="INDEX-$_ka_index"
+    key_line_parts "$_ka_line"
+    if [ "$_ka_first" = "1" ]; then
+      _ka_first=0
+    else
+      printf ','
+    fi
+    printf '{"index":%s,"id":%s,"comment":%s,"algorithm":%s}' \
+      "$_ka_index" "$(jstr "$_ka_id")" "$(jstr "$K_COMMENT")" "$(jstr "$K_ALG")"
+  done <"$ADB_KEYS"
+  printf ']'
+}
+
 cmd_keys_list() {
   if [ ! -f "$ADB_KEYS" ]; then
     printf '{"ok":true,"keys":[]}\n'
     return 0
   fi
-  printf '{"ok":true,"keys":['
-  _kl_first=1
-  _kl_index=0
-  while IFS= read -r _kl_line || [ -n "$_kl_line" ]; do
-    case "$_kl_line" in
-      '' | '#'*) continue ;;
-    esac
-    if ! keys_valid_line "$_kl_line"; then
-      continue
-    fi
-    _kl_index=$((_kl_index + 1))
-    _kl_id=$(keys_line_id "$_kl_line" 2>/dev/null) || _kl_id=''
-    [ -n "$_kl_id" ] || _kl_id="INDEX-$_kl_index"
-    key_line_parts "$_kl_line"
-    if [ "$_kl_first" = "1" ]; then
-      _kl_first=0
-    else
-      printf ','
-    fi
-    printf '{"index":%s,"id":%s,"comment":%s,"algorithm":%s}' \
-      "$_kl_index" "$(jstr "$_kl_id")" "$(jstr "$K_COMMENT")" "$(jstr "$K_ALG")"
-  done <"$ADB_KEYS"
-  printf ']}\n'
+  printf '{"ok":true,"keys":%s}\n' "$(keys_array_json)"
+  return 0
 }
 
 cmd_keys_remove() {
   _kr_id=$1
   [ -n "$_kr_id" ] || fail 15 "remove requires an id"
   [ -f "$ADB_KEYS" ] || fail 15 "adb_keys not found"
-  mkdir -p "$BACKUP_DIR" 2>/dev/null || true
-  _kr_backup="$BACKUP_DIR/adb_keys.$(date +%Y%m%d%H%M%S 2>/dev/null).$$"
-  cp "$ADB_KEYS" "$_kr_backup" 2>/dev/null || fail 15 "cannot write backup"
-  chmod 600 "$_kr_backup" 2>/dev/null || true
+  _kr_backup=$(keys_backup_now) || fail 15 "cannot write backup"
   _kr_tmp="$MODDIR/keys.tmp.$$"
   : >"$_kr_tmp"
   _kr_removed=0
@@ -945,12 +1055,29 @@ cmd_keys_remove() {
     rm -f "$_kr_tmp" 2>/dev/null || true
     fail 15 "key not found"
   fi
-  cp "$_kr_tmp" "$ADB_KEYS" 2>/dev/null || fail 15 "cannot write adb_keys"
+
+  _kr_durable=true
+  _kr_code=0
+  if ! keys_sync_framework; then
+    _kr_durable=false
+    _kr_code=16
+    keys_drop_temp_store
+  fi
+  keys_write_atomic "$_kr_tmp" || {
+    rm -f "$_kr_tmp" 2>/dev/null || true
+    fail 15 "cannot write adb_keys"
+  }
   rm -f "$_kr_tmp" 2>/dev/null || true
-  keys_chmod
-  log_line "keys remove id=$_kr_id removed=$_kr_removed backup=$_kr_backup"
-  printf '{"ok":true,"error_code":0,"removed":%s,"backup":%s}\n' \
-    "$_kr_removed" "$(jstr "$_kr_backup")"
+  _kr_restarted=false
+  keys_restart_adbd && _kr_restarted=true
+  log_line "keys remove id=$_kr_id removed=$_kr_removed backup=$_kr_backup durable=$_kr_durable"
+  if [ "$_kr_code" = "16" ]; then
+    printf '{"ok":false,"error_code":16,"message":"key removal needs reboot","removed":%s,"backup":%s,"durable":false,"adbd_restarted":%s}\n' \
+      "$_kr_removed" "$(jstr "$_kr_backup")" "$_kr_restarted"
+    exit 16
+  fi
+  printf '{"ok":true,"error_code":0,"removed":%s,"backup":%s,"durable":true,"adbd_restarted":%s}\n' \
+    "$_kr_removed" "$(jstr "$_kr_backup")" "$_kr_restarted"
 }
 
 cmd_keys() {
@@ -972,6 +1099,7 @@ cmd_keys() {
       [ -n "$_ke_src" ] || fail 15 "import requires a source path"
       [ -f "$_ke_src" ] || fail 15 "source file not found"
       mkdir -p "$(dirname "$ADB_KEYS")" 2>/dev/null || true
+      _ke_backup=$(keys_backup_now 2>/dev/null) || _ke_backup=''
       _ke_tmp="$MODDIR/keys.tmp.$$"
       : >"$_ke_tmp"
       if [ -f "$ADB_KEYS" ] && [ -s "$ADB_KEYS" ]; then
@@ -1002,12 +1130,29 @@ cmd_keys() {
         rm -f "$_ke_tmp" 2>/dev/null || true
         fail 15 "no valid key found"
       fi
-      cp "$_ke_tmp" "$ADB_KEYS" 2>/dev/null || fail 15 "cannot write adb_keys"
+
+      _ke_durable=true
+      _ke_code=0
+      if ! keys_sync_framework; then
+        _ke_durable=false
+        _ke_code=16
+        keys_drop_temp_store
+      fi
+      keys_write_atomic "$_ke_tmp" || {
+        rm -f "$_ke_tmp" 2>/dev/null || true
+        fail 15 "cannot write adb_keys"
+      }
       rm -f "$_ke_tmp" 2>/dev/null || true
-      keys_chmod
-      log_line "keys import added=$_ke_added skipped=$_ke_skipped invalid=$_ke_invalid"
-      printf '{"ok":true,"error_code":0,"added":%s,"skipped":%s,"invalid":%s}\n' \
-        "$_ke_added" "$_ke_skipped" "$_ke_invalid"
+      _ke_restarted=false
+      keys_restart_adbd && _ke_restarted=true
+      log_line "keys import added=$_ke_added skipped=$_ke_skipped invalid=$_ke_invalid durable=$_ke_durable"
+      if [ "$_ke_code" = "16" ]; then
+        printf '{"ok":false,"error_code":16,"message":"key removal needs reboot","added":%s,"skipped":%s,"invalid":%s,"backup":%s,"durable":false,"adbd_restarted":%s}\n' \
+          "$_ke_added" "$_ke_skipped" "$_ke_invalid" "$(jstr "$_ke_backup")" "$_ke_restarted"
+        exit 16
+      fi
+      printf '{"ok":true,"error_code":0,"added":%s,"skipped":%s,"invalid":%s,"durable":true,"adbd_restarted":%s}\n' \
+        "$_ke_added" "$_ke_skipped" "$_ke_invalid" "$_ke_restarted"
       ;;
 
     backup)
@@ -1028,25 +1173,63 @@ cmd_keys() {
       [ -n "$_ke_src" ] || fail 15 "restore requires a source path"
       [ -f "$_ke_src" ] || fail 15 "source file not found"
       mkdir -p "$(dirname "$ADB_KEYS")" 2>/dev/null || true
-      cp "$_ke_src" "$ADB_KEYS" 2>/dev/null || fail 15 "cannot write adb_keys"
-      keys_chmod
-      log_line "keys restore from=$_ke_src"
-      printf '{"ok":true,"error_code":0}\n'
+      _ke_backup=$(keys_backup_now 2>/dev/null) || _ke_backup=''
+      _ke_tmp="$MODDIR/keys.tmp.$$"
+      cp "$_ke_src" "$_ke_tmp" 2>/dev/null || fail 15 "source file not readable"
+      _ke_durable=true
+      _ke_code=0
+      if ! keys_sync_framework; then
+        _ke_durable=false
+        _ke_code=16
+        keys_drop_temp_store
+      fi
+      keys_write_atomic "$_ke_tmp" || {
+        rm -f "$_ke_tmp" 2>/dev/null || true
+        fail 15 "cannot write adb_keys"
+      }
+      rm -f "$_ke_tmp" 2>/dev/null || true
+      _ke_restarted=false
+      keys_restart_adbd && _ke_restarted=true
+      log_line "keys restore from=$_ke_src durable=$_ke_durable"
+      if [ "$_ke_code" = "16" ]; then
+        printf '{"ok":false,"error_code":16,"message":"key removal needs reboot","backup":%s,"durable":false,"adbd_restarted":%s}\n' \
+          "$(jstr "$_ke_backup")" "$_ke_restarted"
+        exit 16
+      fi
+      printf '{"ok":true,"error_code":0,"backup":%s,"durable":true,"adbd_restarted":%s}\n' \
+        "$(jstr "$_ke_backup")" "$_ke_restarted"
       ;;
 
     clear)
+      [ -f "$ADB_KEYS" ] || fail 15 "adb_keys not found"
       _ke_backup=''
-      if [ -f "$ADB_KEYS" ] && [ -s "$ADB_KEYS" ]; then
-        mkdir -p "$BACKUP_DIR" 2>/dev/null || true
-        _ke_backup="$BACKUP_DIR/adb_keys.$(date +%Y%m%d%H%M%S 2>/dev/null)"
-        cp "$ADB_KEYS" "$_ke_backup" 2>/dev/null || _ke_backup=''
-        [ -n "$_ke_backup" ] && chmod 600 "$_ke_backup" 2>/dev/null
+      _ke_tmp="$MODDIR/keys.tmp.$$"
+      : >"$_ke_tmp"
+      if [ -s "$ADB_KEYS" ]; then
+        _ke_backup=$(keys_backup_now 2>/dev/null) || _ke_backup=''
       fi
-      mkdir -p "$(dirname "$ADB_KEYS")" 2>/dev/null || true
-      : >"$ADB_KEYS" 2>/dev/null || fail 15 "cannot clear adb_keys"
-      keys_chmod
-      log_line "keys clear backup=$_ke_backup"
-      printf '{"ok":true,"error_code":0,"backup":%s}\n' "$(jstr "$_ke_backup")"
+      _ke_durable=true
+      _ke_code=0
+      if ! keys_sync_framework; then
+        _ke_durable=false
+        _ke_code=16
+        keys_drop_temp_store
+      fi
+      keys_write_atomic "$_ke_tmp" || {
+        rm -f "$_ke_tmp" 2>/dev/null || true
+        fail 15 "cannot clear adb_keys"
+      }
+      rm -f "$_ke_tmp" 2>/dev/null || true
+      _ke_restarted=false
+      keys_restart_adbd && _ke_restarted=true
+      log_line "keys clear backup=$_ke_backup durable=$_ke_durable"
+      if [ "$_ke_code" = "16" ]; then
+        printf '{"ok":false,"error_code":16,"message":"key removal needs reboot","backup":%s,"durable":false,"adbd_restarted":%s}\n' \
+          "$(jstr "$_ke_backup")" "$_ke_restarted"
+        exit 16
+      fi
+      printf '{"ok":true,"error_code":0,"backup":%s,"durable":true,"adbd_restarted":%s}\n' \
+        "$(jstr "$_ke_backup")" "$_ke_restarted"
       ;;
 
     *)
@@ -1072,6 +1255,7 @@ usb_get_functions() {
 
 usb_mode_from() {
   case ",$1," in
+    *",ncm,"*) printf 'ncm' ;;
     *",rndis,"*) printf 'rndis' ;;
     *",ptp,"*) printf 'ptp' ;;
     *",mtp,"*) printf 'mtp' ;;
@@ -1098,19 +1282,69 @@ usb_functions_json() {
   printf ']'
 }
 
+settings_num_or() {
+  _sno=$(settings_get "$1")
+  case "$_sno" in
+    '' | null | *[!0-9-]*) printf '%s' "${2:--1}" ;;
+    *) printf '%s' "$_sno" ;;
+  esac
+}
+
+usb_wifi_supported() {
+  _uws=''
+  if command -v cmd >/dev/null 2>&1; then
+    _uws=$(cmd adb is-wifi-supported 2>/dev/null | tr -d '\r' | head -n 1)
+  fi
+  case "$_uws" in
+    true) return 0 ;;
+    false) return 1 ;;
+  esac
+  _uws_sdk=$(adb_getprop ro.build.version.sdk)
+  case "$_uws_sdk" in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  [ "$_uws_sdk" -ge 30 ] 2>/dev/null
+}
+
+usb_apply_functions() {
+  _uaf_funcs=$1
+  command -v svc >/dev/null 2>&1 || return 1
+  if [ -n "$_uaf_funcs" ]; then
+    svc usb setFunctions "$_uaf_funcs" >/dev/null 2>&1 || return 1
+  else
+    svc usb setFunctions >/dev/null 2>&1 || return 1
+  fi
+  sleep "${MYADB_USB_SLEEP:-1}" 2>/dev/null || true
+  usb_get_functions 2>/dev/null
+}
+
+usb_json() {
+  _uj_supported=false
+  command -v svc >/dev/null 2>&1 && _uj_supported=true
+  _uj_funcs=$(usb_get_functions 2>/dev/null) || _uj_funcs=''
+  _uj_mode=$(usb_mode_from "$_uj_funcs")
+  _uj_adb=$(get_adb_enabled)
+  _uj_dev=$(settings_bool development_settings_enabled)
+  _uj_cfg=$(adb_getprop sys.usb.config)
+  _uj_state=$(adb_getprop sys.usb.state)
+  _uj_pcfg=$(adb_getprop persist.sys.usb.config)
+  _uj_wifi=$(settings_num_or adb_wifi_enabled -1)
+  _uj_timeout=$(settings_num_or adb_allowed_connection_time -1)
+  _uj_wsup=false
+  usb_wifi_supported && _uj_wsup=true
+  printf '{"schema":%s,"supports_usb":%s,"adb_enabled":%s,"developer_enabled":%s,"functions":%s,"mode":"%s","usb_config":%s,"usb_state":%s,"persist_usb_config":%s,"adb_wifi_supported":%s,"adb_wifi_enabled":%s,"adb_allowed_connection_time":%s}' \
+    "$SCHEMA" "$_uj_supported" "$_uj_adb" "$_uj_dev" \
+    "$(usb_functions_json "$_uj_funcs")" "$_uj_mode" \
+    "$(jstr "$_uj_cfg")" "$(jstr "$_uj_state")" "$(jstr "$_uj_pcfg")" \
+    "$_uj_wsup" "$_uj_wifi" "$_uj_timeout"
+}
+
 cmd_usb() {
   _usb_action=${1:-}
   case "$_usb_action" in
     status)
-      _usb_supported=false
-      command -v svc >/dev/null 2>&1 && _usb_supported=true
-      _usb_funcs=$(usb_get_functions 2>/dev/null) || _usb_funcs=''
-      _usb_mode=$(usb_mode_from "$_usb_funcs")
-      _usb_adb=$(get_adb_enabled)
-      _usb_dev=$(settings_bool development_settings_enabled)
-      printf '{"schema":%s,"supports_usb":%s,"adb_enabled":%s,"developer_enabled":%s,"functions":%s,"mode":"%s"}\n' \
-        "$SCHEMA" "$_usb_supported" "$_usb_adb" "$_usb_dev" \
-        "$(usb_functions_json "$_usb_funcs")" "$_usb_mode"
+      usb_json
+      printf '\n'
       return 0
       ;;
 
@@ -1118,8 +1352,8 @@ cmd_usb() {
       _usb_key=${2:-}
       _usb_val=${3:-}
       case "$_usb_key" in
-        adb | developer) ;;
-        *) fail 15 "usb set requires adb|developer" ;;
+        adb | developer | wireless) ;;
+        *) fail 15 "usb set requires adb|developer|wireless" ;;
       esac
       case "$_usb_val" in
         on | true | 1) _usb_num=1 ;;
@@ -1127,9 +1361,14 @@ cmd_usb() {
         *) fail 15 "usb set requires on|off" ;;
       esac
       if [ "$_usb_key" = "adb" ]; then
-        settings_put adb_enabled "$_usb_num"
+        settings_put adb_enabled "$_usb_num" || fail 15 "cannot set adb_enabled"
+      elif [ "$_usb_key" = "developer" ]; then
+        settings_put development_settings_enabled "$_usb_num" || fail 15 "cannot set developer options"
       else
-        settings_put development_settings_enabled "$_usb_num"
+        settings_put adb_wifi_enabled "$_usb_num" || fail 15 "cannot set wireless debugging"
+        sleep "${MYADB_WIFI_SLEEP:-0.3}" 2>/dev/null || true
+        _usb_wifi_now=$(settings_num_or adb_wifi_enabled -1)
+        [ "$_usb_wifi_now" = "$_usb_num" ] || fail 15 "wireless debugging did not apply"
       fi
       log_line "usb set $_usb_key=$_usb_num"
       printf '{"ok":true,"error_code":0,"key":"%s","value":%s}\n' "$_usb_key" "$_usb_num"
@@ -1139,187 +1378,97 @@ cmd_usb() {
     mode)
       _usb_mode=${2:-}
       case "$_usb_mode" in
-        charging | mtp | ptp | rndis | midi) ;;
-        *) fail 15 "usb mode requires charging|mtp|ptp|rndis|midi" ;;
+        charging | mtp | ptp | rndis | ncm | midi) ;;
+        *) fail 15 "usb mode requires charging|mtp|ptp|rndis|ncm|midi" ;;
       esac
       command -v svc >/dev/null 2>&1 || fail 15 "svc not available"
       _usb_adb=$(get_adb_enabled)
+      _usb_suffix=''
+      [ "$_usb_adb" = "1" ] && _usb_suffix=',adb'
+
       case "$_usb_mode" in
-        charging) _usb_funcs='' ;;
-        *) _usb_funcs=$_usb_mode ;;
+        charging)
+          _usb_funcs=''
+          _usb_out=$(usb_apply_functions '') || fail 15 "cannot set usb functions"
+          ;;
+        rndis)
+          _usb_out=''
+          if _usb_try=$(usb_apply_functions "ncm$_usb_suffix"); then
+            case ",$_usb_try," in
+              *",ncm,"*) _usb_out=$_usb_try ;;
+            esac
+          fi
+          if [ -z "$_usb_out" ]; then
+            _usb_out=$(usb_apply_functions "rndis$_usb_suffix") || fail 15 "cannot set usb functions"
+          fi
+          ;;
+        *)
+          _usb_out=$(usb_apply_functions "${_usb_mode}${_usb_suffix}") || fail 15 "cannot set usb functions"
+          ;;
       esac
-      if [ "$_usb_adb" = "1" ] && [ -n "$_usb_funcs" ]; then
-        _usb_funcs="$_usb_funcs,adb"
-      fi
-      if [ -n "$_usb_funcs" ]; then
-        svc usb setFunctions "$_usb_funcs" >/dev/null 2>&1 || fail 15 "cannot set usb functions"
-      else
-        svc usb setFunctions >/dev/null 2>&1 || fail 15 "cannot set usb functions"
-      fi
-      sleep "${MYADB_USB_SLEEP:-1}" 2>/dev/null || true
-      _usb_funcs=$(usb_get_functions 2>/dev/null) || _usb_funcs=''
-      _usb_mode_now=$(usb_mode_from "$_usb_funcs")
-      log_line "usb mode=$_usb_mode result=ok functions=$_usb_funcs"
+
+      _usb_mode_now=$(usb_mode_from "$_usb_out")
+      log_line "usb mode=$_usb_mode result=ok functions=$_usb_out"
       printf '{"ok":true,"error_code":0,"mode":"%s","functions":%s}\n' \
-        "$_usb_mode_now" "$(usb_functions_json "$_usb_funcs")"
+        "$_usb_mode_now" "$(usb_functions_json "$_usb_out")"
+      return 0
+      ;;
+
+    timeout)
+      _usb_days=${2:-}
+      is_int_range "$_usb_days" 0 365 || fail 15 "usb timeout out of range"
+      _usb_ms=$(awk -v d="$_usb_days" 'BEGIN { printf "%d", d * 86400000 }')
+      settings_put adb_allowed_connection_time "$_usb_ms" || fail 15 "cannot set authorization timeout"
+      log_line "usb timeout days=$_usb_days ms=$_usb_ms"
+      printf '{"ok":true,"error_code":0,"days":%s,"adb_allowed_connection_time":%s}\n' \
+        "$_usb_days" "$_usb_ms"
       return 0
       ;;
 
     *)
-      fail 15 "usb requires status|set|mode"
+      fail 15 "usb requires status|set|mode|timeout"
       ;;
   esac
 }
 
-notify_debug() {
-  [ -n "${MYADB_NOTIFY_DEBUG:-}" ] || return 0
-  printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)" "$*" >>"$MYADB_NOTIFY_DEBUG" 2>/dev/null || true
-}
-
-notify_post() {
-  _np_title=$1
-  _np_text=$2
-  command -v cmd >/dev/null 2>&1 || return 1
-  _np_cmd="cmd notification post -S bigtext -t $(sh_quote "$_np_title") myadb-status $(sh_quote "$_np_text")"
-  if [ "${NOTIFY_SU_OK:-}" = "" ]; then
-    if su 2000 -c true >/dev/null 2>&1; then
-      NOTIFY_SU_OK=1
-    else
-      NOTIFY_SU_OK=0
-    fi
-  fi
-  if [ "$NOTIFY_SU_OK" = "1" ]; then
-    su 2000 -c "$_np_cmd" >/dev/null 2>&1 && return 0
-  fi
-  cmd notification post -S bigtext -t "$_np_title" myadb-status "$_np_text" >/dev/null 2>&1
-}
-
-notify_once() {
-  cfg_init_cache
-  _no_lang=$(cfg_get language zh)
-  _no_json=$(sh "$SELF" status --json 2>/dev/null)
-  _no_state=$(printf '%s' "$_no_json" | sed -n 's/.*"state":"\([A-Z]*\)".*/\1/p')
-  _no_port=$(printf '%s' "$_no_json" | sed -n 's/.*"port":\(-*[0-9]*\).*/\1/p')
-  _no_listen=$(printf '%s' "$_no_json" | sed -n 's/.*"listening":\(true\|false\).*/\1/p')
-  _no_ip=$(printf '%s' "$_no_json" | sed -n 's/.*"ips":\["\([^"]*\)".*/\1/p')
-  [ -n "$_no_state" ] || _no_state=ERROR
-
-  if [ "$_no_lang" = "en" ]; then
-    case "$_no_state" in
-      ACTIVE)
-        _no_title='MyADB · Active'
-        _no_text="Port $_no_port"
-        [ "$_no_listen" = "true" ] && _no_text="$_no_text · listening"
-        [ -n "$_no_ip" ] && _no_text="$_no_text · $_no_ip"
-        ;;
-      DEGRADED)
-        _no_title='MyADB · Degraded'
-        _no_text="Port $_no_port · listener not confirmed"
-        ;;
-      BLOCKED)
-        _no_title='MyADB · Managed by system'
-        _no_text='listen_addrs is set'
-        ;;
-      IDLE)
-        _no_title='MyADB · Idle'
-        _no_text='Wireless ADB port is off'
-        ;;
-      *)
-        _no_title='MyADB · Error'
-        _no_text='Status read failed'
-        ;;
-    esac
-  else
-    case "$_no_state" in
-      ACTIVE)
-        _no_title='MyADB · 运行中'
-        _no_text="端口 $_no_port"
-        [ "$_no_listen" = "true" ] && _no_text="$_no_text · 监听正常"
-        [ -n "$_no_ip" ] && _no_text="$_no_text · $_no_ip"
-        ;;
-      DEGRADED)
-        _no_title='MyADB · 异常'
-        _no_text="端口 $_no_port · 未确认监听"
-        ;;
-      BLOCKED)
-        _no_title='MyADB · 被系统接管'
-        _no_text='listen_addrs 已设置'
-        ;;
-      IDLE)
-        _no_title='MyADB · 未开启'
-        _no_text='无线调试端口已关闭'
-        ;;
-      *)
-        _no_title='MyADB · 错误'
-        _no_text='状态读取失败'
-        ;;
-    esac
-  fi
-
-  notify_post "$_no_title" "$_no_text"
-}
-
-cmd_notify() {
-  if notify_once; then
-    printf '{"ok":true,"error_code":0}\n'
-  else
-    fail 15 "notification unavailable"
-  fi
-}
-
-cmd_notify_loop() {
-  cfg_init_cache
-  notify_debug "loop start pid=$$ self=$SELF moddir=$MODDIR"
-  command -v cmd >/dev/null 2>&1 || { notify_debug "loop exit: cmd missing"; return 0; }
-  mkdir -p "$MODDIR/run" 2>/dev/null || true
-  printf '%s\n' "$$" >"$MODDIR/run/notify.pid" 2>/dev/null || true
-  trap 'rm -f "$MODDIR/run/notify.pid" 2>/dev/null || true' EXIT INT TERM HUP
-  while :; do
-    if [ "$(cfg_get notification true)" != "true" ]; then
-      notify_debug "loop exit: notification disabled"
-      break
-    fi
-    notify_once >/dev/null 2>&1 || notify_debug "notify_once failed"
-    notify_debug "loop tick pid=$$"
-    sleep "${MYADB_NOTIFY_INTERVAL:-15}" 2>/dev/null || sleep 15
-  done
-  rm -f "$MODDIR/run/notify.pid" 2>/dev/null || true
-}
-
-cmd_notify_daemon() {
-  cfg_init_cache
-  _nd_pidfile="$MODDIR/run/notify.pid"
-  if [ "$(cfg_get notification true)" != "true" ]; then
-    if [ -f "$_nd_pidfile" ]; then
-      _nd_pid=$(cat "$_nd_pidfile" 2>/dev/null)
-      if [ -n "$_nd_pid" ]; then
-        kill "$_nd_pid" 2>/dev/null || true
+cmd_cleanup_legacy_notify() {
+  _cl_stopped=false
+  _cl_pidfile="$MODDIR/run/notify.pid"
+  if [ -f "$_cl_pidfile" ]; then
+    _cl_pid=$(cat "$_cl_pidfile" 2>/dev/null)
+    if [ -n "$_cl_pid" ]; then
+      if kill -0 "$_cl_pid" 2>/dev/null; then
+        kill "$_cl_pid" 2>/dev/null || true
+        sleep 0.2 2>/dev/null || true
+        if kill -0 "$_cl_pid" 2>/dev/null; then
+          kill -9 "$_cl_pid" 2>/dev/null || true
+        fi
+        _cl_stopped=true
       fi
-      rm -f "$_nd_pidfile" 2>/dev/null || true
     fi
-    printf '{"ok":true,"enabled":false}\n'
-    return 0
+    rm -f "$_cl_pidfile" 2>/dev/null || true
   fi
-  if [ -f "$_nd_pidfile" ]; then
-    _nd_pid=$(cat "$_nd_pidfile" 2>/dev/null)
-    if [ -n "$_nd_pid" ] && kill -0 "$_nd_pid" 2>/dev/null; then
-      printf '{"ok":true,"enabled":true,"pid":%s}\n' "$_nd_pid"
-      return 0
+  if command -v cmd >/dev/null 2>&1; then
+    if su 2000 -c "cmd notification cancel myadb-status" >/dev/null 2>&1; then
+      :
+    else
+      cmd notification cancel myadb-status >/dev/null 2>&1 || true
     fi
   fi
-  mkdir -p "$MODDIR/run" 2>/dev/null || true
-  if command -v setsid >/dev/null 2>&1; then
-    setsid sh "$SELF" notify-loop >/dev/null 2>&1 &
-  else
-    sh "$SELF" notify-loop >/dev/null 2>&1 &
-  fi
-  sleep 0.5 2>/dev/null || true
-  _nd_pid=$(cat "$_nd_pidfile" 2>/dev/null)
-  if [ -z "$_nd_pid" ] || [ "$_nd_pid" = "0" ]; then
-    printf '{"ok":false,"error_code":15,"message":"notification daemon failed"}\n'
-    return 15
-  fi
-  printf '{"ok":true,"enabled":true,"pid":%s}\n' "$_nd_pid"
+  printf '{"ok":true,"error_code":0,"stopped":%s}\n' "$_cl_stopped"
+  return 0
+}
+
+config_json() {
+  printf '{"schema":%s,"port":%s,"enabled":%s,"toggle_adb_enabled":%s,"restore_adb_enabled":%s,"retry":%s,"retry_interval":%s,"language":%s}' \
+    "$SCHEMA" \
+    "$(cfg_get port "$DEFAULT_PORT")" \
+    "$(cfg_get enabled false)" \
+    "$(cfg_get toggle_adb_enabled true)" \
+    "$(cfg_get restore_adb_enabled true)" \
+    "$(cfg_get retry 3)" \
+    "$(cfg_get retry_interval 10)" \
+    "$(jstr "$(cfg_get language zh)")"
 }
 
 cmd_config() {
@@ -1346,16 +1495,109 @@ cmd_config() {
     return 0
   fi
 
-  printf '{"schema":%s,"port":%s,"enabled":%s,"toggle_adb_enabled":%s,"restore_adb_enabled":%s,"retry":%s,"retry_interval":%s,"language":%s,"notification":%s}\n' \
-    "$SCHEMA" \
-    "$(cfg_get port "$DEFAULT_PORT")" \
-    "$(cfg_get enabled false)" \
-    "$(cfg_get toggle_adb_enabled true)" \
-    "$(cfg_get restore_adb_enabled true)" \
-    "$(cfg_get retry 3)" \
-    "$(cfg_get retry_interval 10)" \
-    "$(jstr "$(cfg_get language zh)")" \
-    "$(cfg_get notification true)"
+  config_json
+  printf '\n'
+  return 0
+}
+
+# snapshot --with status,config[,usb,keys]
+# Read-only aggregate used by the WebUI to avoid several adbctl processes.
+cmd_snapshot() {
+  cfg_init_cache
+  _sn_with='status,config'
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --with)
+        shift
+        _sn_with=${1:-}
+        ;;
+      --with=*) _sn_with=${1#--with=} ;;
+      --json) ;;
+      *) fail 15 "unknown snapshot option $1" ;;
+    esac
+    shift
+  done
+
+  _sn_sections=''
+  _sn_oldifs=$IFS
+  IFS=,
+  for _sn_sec in $_sn_with; do
+    case "$_sn_sec" in
+      status | config | usb | keys) ;;
+      *)
+        IFS=$_sn_oldifs
+        fail 15 "unknown snapshot section: $_sn_sec"
+        ;;
+    esac
+    case ",$_sn_sections," in
+      *",$_sn_sec,"*) continue ;;
+    esac
+    if [ -z "$_sn_sections" ]; then
+      _sn_sections=$_sn_sec
+    else
+      _sn_sections="$_sn_sections,$_sn_sec"
+    fi
+  done
+  IFS=$_sn_oldifs
+  [ -n "$_sn_sections" ] || fail 15 "snapshot requires at least one section"
+
+  _sn_body=''
+  _sn_errors=''
+  _sn_space=$(printf '%s' "$_sn_sections" | tr ',' ' ')
+  for _sn_sec in $_sn_space; do
+    _sn_code=0
+    _sn_val=''
+    case "$_sn_sec" in
+      status) _sn_val=$(status_json) || _sn_code=$? ;;
+      config) _sn_val=$(config_json) || _sn_code=$? ;;
+      usb) _sn_val=$(usb_json) || _sn_code=$? ;;
+      keys)
+        if is_root; then
+          _sn_val=$(keys_array_json) || _sn_code=$?
+        else
+          _sn_code=13
+        fi
+        ;;
+    esac
+    [ "$_sn_code" = "0" ] && [ -z "$_sn_val" ] && _sn_code=15
+    if [ "$_sn_code" = "0" ] && [ -n "$_sn_val" ]; then
+      if [ -z "$_sn_body" ]; then
+        _sn_body="\"$_sn_sec\":$_sn_val"
+      else
+        _sn_body="$_sn_body,\"$_sn_sec\":$_sn_val"
+      fi
+    else
+      [ "$_sn_code" = "0" ] && _sn_code=15
+      if [ -z "$_sn_errors" ]; then
+        _sn_errors="\"$_sn_sec\":$_sn_code"
+      else
+        _sn_errors="$_sn_errors,\"$_sn_sec\":$_sn_code"
+      fi
+    fi
+  done
+  IFS=$_sn_oldifs
+
+  printf '{"schema":%s,"sections":[' "$SCHEMA"
+  _sn_first=1
+  IFS=,
+  for _sn_sec in $_sn_sections; do
+    if [ "$_sn_first" = "1" ]; then
+      _sn_first=0
+    else
+      printf ','
+    fi
+    printf '"%s"' "$_sn_sec"
+  done
+  IFS=$_sn_oldifs
+  printf '],'
+  if [ -n "$_sn_body" ]; then
+    printf '%s,' "$_sn_body"
+  fi
+  if [ -n "$_sn_errors" ]; then
+    printf '"errors":{%s}}\n' "$_sn_errors"
+  else
+    printf '"errors":{}}\n'
+  fi
   return 0
 }
 
@@ -1371,16 +1613,15 @@ Usage:
   adbctl boot on|off [--port N]
   adbctl doctor [--json]
   adbctl log [-n N]
+  adbctl snapshot [--with status,config,usb,keys]
   adbctl keys list|import|backup|restore|remove <ID>|clear [PATH]
-  adbctl usb status|set adb|developer on|off|mode charging|mtp|ptp|rndis|midi
+  adbctl usb status|set adb|developer|wireless on|off|mode charging|mtp|ptp|rndis|ncm|midi|timeout DAYS
   adbctl config [get KEY|set KEY VALUE]
 
 Internal:
   adbctl boot-apply
   adbctl refresh-desc
-  adbctl notify
-  adbctl notify-daemon
-  adbctl notify-loop
+  adbctl cleanup-legacy-notify
 EOF
 }
 
@@ -1401,11 +1642,10 @@ case "$_cmd" in
   refresh-desc) refresh_desc "$@" ;;
   doctor) cmd_doctor "$@" ;;
   log) cmd_log "$@" ;;
+  snapshot) cmd_snapshot "$@" ;;
   keys) cmd_keys "$@" ;;
   usb) cmd_usb "$@" ;;
-  notify) cmd_notify "$@" ;;
-  notify-daemon) cmd_notify_daemon "$@" ;;
-  notify-loop) cmd_notify_loop "$@" ;;
+  cleanup-legacy-notify) cmd_cleanup_legacy_notify "$@" ;;
   config) cmd_config "$@" ;;
   '' | -h | --help | help)
     usage

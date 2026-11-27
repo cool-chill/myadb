@@ -6,7 +6,7 @@ MyADB 是一个 KernelSU / Magisk / APatch 模块，用于控制系统 adbd 的 
 
 源码仓库：<https://github.com/cool-chill/myadb>
 
-最新发布：<https://github.com/cool-chill/myadb/releases/tag/v1.0.0>
+最新发布：<https://github.com/cool-chill/myadb/releases/tag/v1.1.0>
 
 ## 目录
 
@@ -37,12 +37,12 @@ MyADB 是一个 KernelSU / Magisk / APatch 模块，用于控制系统 adbd 的 
 - 端口占用检测：冲突时拒绝操作并报告占用者 uid / pid。
 - 失败回滚：变更前快照，adbd 启动失败时恢复原端口与 `adb_enabled`。
 - 幂等：端口未变且已确认监听时不重启 adbd。
-- 密钥管理：导入、备份、恢复、清除 `/data/misc/adb/adb_keys`，清除前自动备份。
-- 已授权设备管理：列出 ADB 公钥的注释与 MD5 指纹，可删除单条授权，不暴露密钥内容。
-- USB 管理：切换 USB 调试、开发者选项，以及仅充电 / MTP / PTP / RNDIS 模式。
-- 常驻通知：每 15 秒发布一条 ADB 状态通知，显示端口、监听结果与设备 IP。
-- 诊断与日志：`doctor` 输出环境信息，日志单文件滚动 200 行。
-- 中英双语 WebUI，默认中文，切换即时生效。
+- 密钥管理：导入、备份、恢复、清除 `/data/misc/adb/adb_keys`，删除时同步清理框架授权缓存，避免旧密钥回弹。
+- 已授权设备管理：列出 ADB 公钥的注释与 MD5 指纹，可持久删除单条或全部授权，不暴露密钥内容。
+- USB 管理：切换 USB 调试、开发者选项、无线调试，以及仅充电 / MTP / PTP / NCM / RNDIS / MIDI 模式，并设置授权有效期。
+- 无通知打扰：不再发布常驻通知，状态由管理器模块描述与 WebUI 展示。
+- 诊断与日志：`doctor` 输出环境、临时授权存储与无线调试信息，日志单文件滚动 200 行。
+- 中英双语 WebUI，默认中文，切换即时生效；主页与设置页通过 `snapshot` 快照接口减少命令行调用。
 
 ## 兼容性
 
@@ -53,7 +53,7 @@ MyADB 是一个 KernelSU / Magisk / APatch 模块，用于控制系统 adbd 的 
 | WebUI | 需要管理器支持模块 `webroot`（KernelSU 管理器或 MMRL） |
 | 无 WebUI | `action.sh` 会输出状态 JSON，仍可完整使用命令行 |
 | WebView | 兼容基线 Chromium 111，更低版本显示提示条 |
-| 已验证 | Pixel 7 / Android 17 / KernelSU 3.2.5（含 WebUI）；Android 11 / Magisk（CLI 与通知）；Linux 伪 `/proc` 集成测试与 WebUI mock 测试 |
+| 已验证 | Pixel 7 / Android 17 / KernelSU 3.2.5（含 WebUI）；Android 11 / Magisk（CLI 与 USB）；Linux 伪 `/proc` 集成测试与 WebUI mock 测试 |
 
 ## 安装
 
@@ -100,10 +100,9 @@ adb devices
 |---|---|
 | 界面语言 | 中文 / English，写入 `language` 配置 |
 | 行为 | `toggle_adb_enabled`、`restore_adb_enabled` |
-| 已授权设备 | 列出公钥注释、MD5 指纹，可删除单条授权 |
-| ADB 密钥 | 导入、备份、恢复、清除；清除前自动备份 |
-| USB | USB 调试、开发者选项、仅充电 / MTP / PTP / RNDIS |
-| 常驻通知 | 每 15 秒更新 ADB 状态；点击无动作，WebUI 从管理器进入 |
+| 已授权设备 | 列出公钥注释、MD5 指纹，可删除单条或撤销全部授权 |
+| ADB 密钥 | 导入、备份、恢复、清除；操作结果就地反馈，恢复前自动备份 |
+| USB | USB 调试、开发者选项、无线调试、授权有效期、仅充电 / MTP / PTP / NCM / RNDIS / MIDI |
 | 关于 | 版本、仓库地址、开源协议 |
 
 状态值含义：
@@ -129,14 +128,15 @@ adb devices
 | `adbctl boot on\|off [--port 6000]` | 配置开机自启 |
 | `adbctl doctor --json` | 环境诊断 |
 | `adbctl log -n 50` | 最近日志（JSON 数组） |
+| `adbctl snapshot --with status,config[,usb,keys]` | 一次返回多段只读 JSON |
 | `adbctl keys list` | 列出已授权设备（注释与指纹，不含密钥内容） |
-| `adbctl keys remove <ID>` | 删除单条授权（自动备份） |
-| `adbctl keys import\|backup\|restore\|clear [PATH]` | 密钥管理 |
-| `adbctl usb status` | USB 调试、开发者选项与当前 USB 模式 |
-| `adbctl usb set adb\|developer on\|off` | 切换 USB 调试或开发者选项 |
-| `adbctl usb mode charging\|mtp\|ptp\|rndis\|midi` | 切换 USB 模式 |
-| `adbctl notify` | 立即发布一条状态通知 |
-| `adbctl notify-daemon` | 启动或停止通知守护进程 |
+| `adbctl keys remove <ID>` | 持久删除单条授权（自动备份，可能返回 16） |
+| `adbctl keys import\|backup\|restore\|clear [PATH]` | 密钥管理，导入/恢复会同步框架缓存 |
+| `adbctl usb status` | USB 调试、开发者选项、无线调试、USB 模式与授权有效期 |
+| `adbctl usb set adb\|developer\|wireless on\|off` | 切换 USB 调试、开发者选项或无线调试 |
+| `adbctl usb mode charging\|mtp\|ptp\|rndis\|ncm\|midi` | 切换 USB 模式；`rndis` 会优先尝试 NCM |
+| `adbctl usb timeout 0\|7\|30` | 设置授权有效期，`0` 表示永不过期 |
+| `adbctl cleanup-legacy-notify` | 内部命令，停止旧版通知守护进程并尽力取消旧通知 |
 | `adbctl config [get KEY\|set KEY VALUE]` | 读取或修改配置 |
 
 常用示例：
@@ -194,6 +194,7 @@ CLI 只输出 JSON 与退出码，本地化文案由 WebUI 按错误码渲染。
 | `13` | 未获得 root 权限 |
 | `14` | 端口不在 `1024–65535` |
 | `15` | 其他系统错误，见日志 |
+| `16` | 密钥已写入，但框架授权缓存未能清除，需要重启后彻底生效 |
 
 ## 配置
 
@@ -208,7 +209,6 @@ CLI 只输出 JSON 与退出码，本地化文案由 WebUI 按错误码渲染。
 | `retry` | `3` | 开机失败重试次数 |
 | `retry_interval` | `10` | 重试间隔（秒） |
 | `language` | `zh` | `zh` / `en` |
-| `notification` | `true` | 是否运行常驻状态通知 |
 
 存储位置与优先级：
 
@@ -264,13 +264,15 @@ su -c '/data/adb/modules/myadb/bin/adbctl keys clear'
 | `error_code=13` | 确认管理器已授予 root，命令行使用 `su -c` |
 | `error_code=14` | 端口必须在 `1024–65535` |
 | `error_code=15` | 查看日志；常见原因是属性写入失败或系统命令缺失 |
+| `error_code=16` | 密钥已写入但框架缓存未清理，重启设备后重试；`doctor` 可查看 `adb_temp_keys.xml` |
 | WebUI 白屏 | 确认管理器支持 `webroot`，重新安装模块；确认构建使用 `base: './'` |
 | WebUI 样式异常 | 查看是否出现 WebView 低版本提示；升级 Android System WebView |
 | PC 无法连接 | 确认同一局域网、端口正确、路由器未隔离客户端；在电脑执行 `adb kill-server && adb start-server` |
 | MIUI / HyperOS / One UI | 属性可能延迟生效，开机后等待 30 秒并运行 `doctor` |
 | 开关后连接断开 | 端口变更会重启 adbd，这是预期行为 |
 | USB 模式切换后 ADB 断开 | USB 模式变更会重置 USB 接口，等待系统重新枚举后重连 |
-| 通知点击无反应 | Shell 通知在 Android 11+ 无法设置点击动作，请从管理器打开 WebUI |
+| 删除授权后设备又出现 | 确认 `keys remove` 返回 `durable=true`；返回 16 时需重启后再操作 |
+| 无线调试与模块端口冲突 | 两者可能同时占用 ADB 通道，建议只保留一种 |
 | 开机未自动开启 | 确认 `enabled=true`，并查看 log 中的 `boot-apply` 记录 |
 
 诊断命令：
@@ -311,7 +313,7 @@ getprop service.adb.tcp.port
 ./scripts/build.sh
 ```
 
-`scripts/build.sh` 会依次执行 `npm ci`、类型检查、双语键校验、构建、复制 `core/adbctl.sh` 到 `module/bin/`，最后输出 `dist/myadb-v1.0.0.zip`。
+`scripts/build.sh` 会依次执行 `npm ci`、类型检查、双语键校验、构建、复制 `core/adbctl.sh` 到 `module/bin/`，最后输出 `dist/myadb-v1.1.0.zip`。
 
 只构建 WebUI：
 
@@ -376,7 +378,7 @@ shellcheck -s bash scripts/build.sh
 
 1. **业务逻辑只有一份**：`adbctl` 是唯一事实来源，`service.sh`、`boot-completed.sh`、`action.sh`、WebUI 都调它。
 2. **状态以实测为准**：解析 `/proc` 并用 adbd fd inode 校验，不信任 `getprop`。
-3. **通知是旁路**：`service.sh` 启动 `notify-daemon`，每 15 秒轮询 `status` 并发布 shell 通知；状态判断仍由 `adbctl` 提供。
+3. **快照与缓存**：WebUI 通过 `adbctl snapshot` 一次读取多段状态，并在前端做 1.5 秒短缓存；变更成功后立即失效。模块不再发布常驻通知。
 
 监听校验算法：
 
@@ -408,7 +410,7 @@ myadb/
 ## 安全建议
 
 - 明文 ADB 端口会暴露设备调试能力，只在可信网络使用。
-- 常驻通知由 shell 发布，系统可能显示为「Shell」；它只展示状态，不包含点击跳转。
+- 不建议同时开启无线调试与模块明文端口，二者可能争用 ADB 通道。
 - 建议修改为非默认端口，并避免在公共 Wi-Fi 下开启。
 - ADB 密钥等同于登录凭据，备份文件应妥善保管。
 - 本工具不提供反检测、隐藏、绕过风控能力，也不会修改 `/system` 或 SELinux 策略。

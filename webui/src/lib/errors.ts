@@ -5,7 +5,7 @@ export interface MessageRef {
   vars?: Record<string, string | number>
 }
 
-export const KNOWN_ERROR_CODES = [10, 11, 12, 13, 14, 15] as const
+export const KNOWN_ERROR_CODES = [10, 11, 12, 13, 14, 15, 16] as const
 
 const known = new Set<number>(KNOWN_ERROR_CODES)
 

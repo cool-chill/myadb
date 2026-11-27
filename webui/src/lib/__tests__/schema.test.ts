@@ -7,6 +7,7 @@ import {
   parseKeys,
   parseLog,
   parseResult,
+  parseSnapshot,
   parseStatus,
   parseUsb,
 } from '@/lib/schema'
@@ -47,7 +48,6 @@ describe('config schema', () => {
       enabled: false,
       toggle_adb_enabled: true,
       restore_adb_enabled: true,
-      notification: true,
       retry: 3,
       retry_interval: 10,
       language: 'zh',
@@ -64,7 +64,6 @@ describe('config schema', () => {
           enabled: false,
           toggle_adb_enabled: true,
           restore_adb_enabled: true,
-      notification: true,
           retry: 3,
           retry_interval: 10,
           language: 'fr',
@@ -107,11 +106,40 @@ describe('doctor and log payloads', () => {
   })
 
   it('parses command results', () => {
-    expect(parseResult(JSON.stringify({ ok: false, error_code: 11, uid: 1000 }))).toMatchObject({
+    expect(
+      parseResult(
+        JSON.stringify({ ok: false, error_code: 16, durable: false, adbd_restarted: true }),
+      ),
+    ).toMatchObject({
       ok: false,
-      error_code: 11,
-      uid: 1000,
+      error_code: 16,
+      durable: false,
+      adbd_restarted: true,
     })
+  })
+
+  it('parses snapshots with optional sections and errors', () => {
+    const snapshot = {
+      schema: 1,
+      sections: ['status', 'config'],
+      status,
+      config: {
+        schema: 1,
+        port: 5555,
+        enabled: true,
+        toggle_adb_enabled: true,
+        restore_adb_enabled: true,
+        retry: 3,
+        retry_interval: 10,
+        language: 'zh',
+      },
+      errors: {},
+    }
+    expect(parseSnapshot(JSON.stringify(snapshot))).toEqual(snapshot)
+    expect(
+      parseSnapshot(JSON.stringify({ schema: 1, sections: ['keys'], errors: { keys: 13 } })),
+    ).toMatchObject({ errors: { keys: 13 } })
+    expect(parseSnapshot(JSON.stringify({ schema: 1 }))).toBeNull()
   })
 })
 
@@ -124,9 +152,16 @@ describe('usb and keys payloads', () => {
       developer_enabled: 0,
       functions: ['mtp', 'adb'],
       mode: 'mtp',
+      usb_config: 'mtp,adb',
+      usb_state: 'CONFIGURED',
+      persist_usb_config: 'mtp,adb',
+      adb_wifi_supported: true,
+      adb_wifi_enabled: 0,
+      adb_allowed_connection_time: 604800000,
     }
     expect(parseUsb(JSON.stringify(usb))).toEqual(usb)
     expect(parseUsb(JSON.stringify({ ...usb, mode: 'car' }))).toBeNull()
+    expect(parseUsb(JSON.stringify({ ...usb, supports_usb: 'yes' }))).toBeNull()
   })
 
   it('parses authorized key entries without key material', () => {

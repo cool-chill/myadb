@@ -15,5 +15,5 @@ done
 [ -x "$MODDIR/bin/adbctl" ] || exit 0
 
 "$MODDIR/bin/adbctl" boot-apply
-"$MODDIR/bin/adbctl" notify-daemon >/dev/null 2>&1
+"$MODDIR/bin/adbctl" cleanup-legacy-notify >/dev/null 2>&1
 exit 0

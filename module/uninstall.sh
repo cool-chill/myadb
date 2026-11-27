@@ -11,11 +11,8 @@ if [ -x "$MODDIR/bin/adbctl" ]; then
   "$MODDIR/bin/adbctl" disable >/dev/null 2>&1
 fi
 
-if [ -f "$MODDIR/run/notify.pid" ]; then
-  pid=$(cat "$MODDIR/run/notify.pid" 2>/dev/null)
-  if [ -n "$pid" ]; then
-    kill "$pid" 2>/dev/null || true
-  fi
+if [ -x "$MODDIR/bin/adbctl" ]; then
+  "$MODDIR/bin/adbctl" cleanup-legacy-notify >/dev/null 2>&1
 fi
 
 setprop service.adb.tcp.port -1 >/dev/null 2>&1

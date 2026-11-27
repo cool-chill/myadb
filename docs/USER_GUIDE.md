@@ -130,11 +130,10 @@ su -c '/data/adb/modules/myadb/bin/adbctl boot on --port 5555'
 | 界面语言 | 中文 / English，写入 `language`，立即生效 |
 | 开启时同步打开系统 USB 调试 | `toggle_adb_enabled` |
 | 关闭时恢复原 USB 调试状态 | `restore_adb_enabled` |
-| 已授权设备 | 列出公钥注释、MD5 指纹，可删除单条授权 |
-| USB 与设备 | USB 调试、开发者选项、仅充电 / MTP / PTP / RNDIS |
-| 常驻通知 | 每 15 秒更新 ADB 状态；点击无动作 |
+| 已授权设备 | 列出公钥注释、MD5 指纹，可删除单条或撤销全部授权 |
+| USB 与设备 | USB 调试、开发者选项、无线调试、授权有效期、仅充电 / MTP / PTP / NCM / RNDIS / MIDI |
 | ADB 密钥路径 | 导入/备份/恢复使用的文件路径，默认 `/sdcard/adb_keys` |
-| 清除密钥 | 二次确认，系统先自动备份再清空 |
+| 导入 / 恢复 / 清除 | 操作结果在卡片内就地反馈；路径为空时禁用导入与恢复；恢复前自动备份 |
 
 ## 7. 命令行参考
 
@@ -158,13 +157,13 @@ CLI 约定：
 | `adbctl boot` | `on\|off [--port N]` | 开机自启配置 |
 | `adbctl doctor` | `--json` | 环境诊断 |
 | `adbctl log` | `[-n N]` | 最近日志 |
+| `adbctl snapshot` | `--with status,config[,usb,keys]` | 一次返回多段只读 JSON |
 | `adbctl keys` | `list \| import <path> \| backup <path> \| restore <path> \| remove <ID> \| clear` | 密钥与授权设备管理 |
-| `adbctl usb` | `status \| set adb\|developer on\|off \| mode charging\|mtp\|ptp\|rndis\|midi` | USB 调试、开发者选项与 USB 模式 |
-| `adbctl notify` | 无 | 立即发布一条状态通知 |
-| `adbctl notify-daemon` | 无 | 启动或停止通知守护进程 |
+| `adbctl usb` | `status \| set adb\|developer\|wireless on\|off \| mode charging\|mtp\|ptp\|rndis\|ncm\|midi \| timeout DAYS` | USB 调试、无线调试、USB 模式与授权有效期 |
 | `adbctl config` | `[get KEY \| set KEY VALUE]` | 配置读写 |
 | `adbctl boot-apply` | 无 | 内部命令，供 `service.sh` 使用 |
 | `adbctl refresh-desc` | 无 | 内部命令，刷新管理器描述 |
+| `adbctl cleanup-legacy-notify` | 无 | 内部命令，停止旧版通知守护进程 |
 
 ### 7.2 状态 JSON
 
@@ -215,6 +214,7 @@ CLI 约定：
 | `13` | 无 root | 授予 root 或使用 `su -c` |
 | `14` | 端口非法 | 使用 `1024–65535` |
 | `15` | 其他系统错误 | 查看日志与 `doctor` |
+| `16` | 密钥已写入但框架缓存未清除 | 重启设备后重试，`doctor` 可查看临时授权存储 |
 
 ### 7.4 常用场景
 
@@ -265,7 +265,6 @@ su -c '/data/adb/modules/myadb/bin/adbctl status --json'
 | `retry` | `3` | `1–10` | 开机失败重试次数 |
 | `retry_interval` | `10` | `1–120` | 重试间隔（秒） |
 | `language` | `zh` | `zh` / `en` | WebUI 语言 |
-| `notification` | `true` | `true` / `false` | 是否运行常驻通知守护进程 |
 
 ### 8.2 存储与优先级
 
@@ -293,7 +292,6 @@ su -c '/data/adb/modules/myadb/bin/adbctl config'
 | `state` | `state`、`port`、`prev_port`、`prev_adb_enabled`、`timestamp` |
 | `log/adbctl.log` | 时间戳 + 操作 + 结果，滚动 200 行 |
 | `backup/` | 密钥清除或显式备份的输出目录 |
-| `run/notify.pid` | 常驻通知守护进程 PID；不存在表示未运行 |
 
 日志示例：
 
@@ -337,7 +335,7 @@ su -c '/data/adb/modules/myadb/bin/adbctl keys clear'
 
 清除前会复制到 `/data/adb/modules/myadb/backup/adb_keys.<timestamp>`，权限 `600`。
 
-## 10. 设备授权、USB 与通知
+## 10. 设备授权、USB 与通知迁移
 
 ### 10.1 已授权设备
 
@@ -346,6 +344,7 @@ WebUI「设置」页的「已授权设备」会列出 `/data/misc/adb/adb_keys` 
 - 显示注释（例如 `desktop@example`）、MD5 指纹与算法。
 - 不显示密钥内容。
 - 删除单条授权时会自动备份到模块 `backup/` 目录。
+- 删除会同时清理系统框架的授权缓存，避免新设备授权后旧密钥回弹。
 - 删除当前电脑的授权后，该电脑下次连接需要重新确认。
 
 命令行：
@@ -364,7 +363,9 @@ WebUI「设置」页的「USB 与设备」提供：
 
 - USB 调试开关（`adb_enabled`）。
 - 开发者选项开关（`development_settings_enabled`）。
-- USB 模式：仅充电、文件传输（MTP）、照片传输（PTP）、USB 网络共享（RNDIS）。
+- 无线调试开关（`adb_wifi_enabled`），与模块明文端口同时开启可能冲突。
+- USB 模式：仅充电、文件传输（MTP）、照片传输（PTP）、USB 网络共享（NCM / RNDIS）、MIDI。
+- 授权有效期：永不过期、7 天、30 天。
 
 命令行：
 
@@ -375,38 +376,25 @@ su -c '/data/adb/modules/myadb/bin/adbctl usb status'
 # 打开开发者选项
 su -c '/data/adb/modules/myadb/bin/adbctl usb set developer on'
 
+# 打开无线调试
+su -c '/data/adb/modules/myadb/bin/adbctl usb set wireless on'
+
 # 切换为文件传输
 su -c '/data/adb/modules/myadb/bin/adbctl usb mode mtp'
+
+# 设置授权有效期为 7 天
+su -c '/data/adb/modules/myadb/bin/adbctl usb timeout 7'
 ```
 
-切换 USB 模式会重置 USB 接口，可能短暂断开 USB/ADB；等待系统重新枚举后重连。关闭 USB 调试也会断开当前 ADB 连接。
+切换 USB 模式会重置 USB 接口，可能短暂断开 USB/ADB；等待系统重新枚举后重连。网络共享会优先尝试 NCM，失败时回退 RNDIS。关闭 USB 调试也会断开当前 ADB 连接。
 
-### 10.3 常驻通知
+### 10.3 通知移除与升级迁移
 
-模块会在开机后启动一个 shell 守护进程，每 15 秒发布一条 ADB 状态通知：
+v1.1.0 起不再发布任何常驻通知，避免响铃、弹窗与振动。状态改由管理器中的模块描述和 WebUI 展示。
 
-- 标题与文本随状态、语言变化。
-- 显示端口、监听结果与设备 IP。
-- 通知由 shell 发布，系统可能显示为「Shell」。
-- Android 11+ 的 shell 通知无法设置点击动作，点击不会跳转；WebUI 仍从管理器进入。
-- 被手动划掉后，下一次刷新会重新出现。
-- 关闭通知只会停止刷新，已经显示的通知需要手动划掉。
-
-关闭方式：WebUI「设置」→「行为」→ 关闭「常驻通知」，或：
-
-```bash
-# 关闭通知并停止守护进程
-su -c '/data/adb/modules/myadb/bin/adbctl config set notification false'
-su -c '/data/adb/modules/myadb/bin/adbctl notify-daemon'
-```
-
-开启：
-
-```bash
-# 开启通知并启动守护进程
-su -c '/data/adb/modules/myadb/bin/adbctl config set notification true'
-su -c '/data/adb/modules/myadb/bin/adbctl notify-daemon'
-```
+- 升级时 `service.sh` 会调用 `cleanup-legacy-notify`，停止旧版通知守护进程。
+- 旧通知可能短期残留，可手动划掉或重启设备。
+- 配置中的 `notification` 键会被忽略，安装脚本会尝试删除旧配置项。
 
 ## 11. 诊断与日志
 
@@ -453,11 +441,11 @@ su -c '/data/adb/modules/myadb/bin/adbctl log -n 50'
 6. **网络是否可达**：同一局域网、无客户端隔离、防火墙放行。
 7. **WebView 是否过旧**：查看页面顶部提示条。
 
-USB 与通知相关问题：
+USB 相关问题：
 
 - USB 模式切换后 ADB 断开：等待 USB 重新枚举，必要时重新插拔或重启。
-- 通知点击无反应：这是 Android 11+ shell 通知的限制；请从管理器打开 WebUI。
-- 通知不更新：确认 `notification=true`，并执行 `adbctl notify-daemon` 检查 `run/notify.pid`。
+- 删除授权后设备又出现：确认 `keys remove` 返回 `durable=true`；返回 16 时需重启后再操作。
+- 无线调试与模块端口冲突：建议只保留一种 ADB 通道。
 
 常见修复：
 
@@ -486,7 +474,7 @@ getprop service.adb.tcp.port
 1. 在管理器中卸载。
 2. `uninstall.sh` 尝试关闭端口，删除日志、备份、state、config。
 3. `/data/misc/adb/adb_keys` 不删除。
-4. 通知守护进程会停止；已显示的通知可能残留，可手动划掉。
+4. 通知守护进程会被清理；已显示的通知可能残留，可手动划掉。
 
 ### 12.3 恢复
 
@@ -507,7 +495,7 @@ setprop ctl.restart adbd
 - 不要把 `adb_keys` 备份上传到公共位置。
 - 不要在公共 Wi-Fi 下长期开启。
 - 本工具不会绕过系统安全策略；遇到 `listen_addrs` 接管时按设计停止。
-- 常驻通知由 shell 发布，系统可能显示为「Shell」；它只展示状态，不包含点击跳转。
+- 不建议同时开启无线调试与模块明文端口，二者可能争用 ADB 通道。
 
 ## 15. FAQ
 

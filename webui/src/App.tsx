@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { Home as HomeIcon, Settings as SettingsIcon, Smartphone } from 'lucide-react'
 import { Home } from '@/pages/Home'
-import { Settings } from '@/pages/Settings'
 import { useI18n } from '@/i18n'
 import { detectChromeVersion, MIN_CHROMIUM } from '@/lib/webview'
+
+const Settings = lazy(() =>
+  import('@/pages/Settings').then((module) => ({ default: module.Settings })),
+)
 
 type Tab = 'home' | 'settings'
 
@@ -51,7 +54,21 @@ export default function App() {
           </div>
         ) : null}
 
-        <main className="flex-1 px-4 py-4 pb-28">{tab === 'home' ? <Home /> : <Settings />}</main>
+        <main className="flex-1 px-4 py-4 pb-28">
+          {tab === 'home' ? (
+            <Home />
+          ) : (
+            <Suspense
+              fallback={
+                <div className="flex items-center justify-center py-16 text-muted-foreground">
+                  {t('common.loading')}
+                </div>
+              }
+            >
+              <Settings />
+            </Suspense>
+          )}
+        </main>
 
         <nav className="safe-bottom fixed inset-x-0 bottom-0 z-20 border-t border-border bg-card">
           <div className="mx-auto grid w-full max-w-xl grid-cols-2">

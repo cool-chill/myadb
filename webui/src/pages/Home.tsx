@@ -23,10 +23,10 @@ import {
   copyText,
   disable,
   enable,
-  fetchConfig,
   fetchDoctor,
   fetchLogs,
-  fetchStatus,
+  fetchSnapshot,
+  invalidateCache,
   isNativeBridge,
   notify,
   setBoot,
@@ -60,14 +60,15 @@ export function Home() {
   const [showLogs, setShowLogs] = useState(false)
 
   const load = useCallback(
-    async (spinner: boolean) => {
+    async (spinner: boolean, bypassCache = false) => {
       if (spinner) setLoading(true)
       try {
-        const [nextStatus, nextConfig] = await Promise.all([fetchStatus(), fetchConfig()])
-        setStatus(nextStatus)
-        setConfig(nextConfig)
-        setLang(nextConfig.language)
-        setPortInput(String(nextConfig.port))
+        const snapshot = await fetchSnapshot(['status', 'config'], { bypassCache })
+        if (!snapshot.status || !snapshot.config) throw new Error('snapshot sections missing')
+        setStatus(snapshot.status)
+        setConfig(snapshot.config)
+        setLang(snapshot.config.language)
+        setPortInput(String(snapshot.config.port))
       } catch {
         setError(t('error.status'))
       } finally {
@@ -204,7 +205,8 @@ export function Home() {
                 disabled={busy !== null}
                 onClick={() => {
                   setError(null)
-                  void load(false)
+                  invalidateCache()
+                  void load(false, true)
                 }}
               >
                 <RefreshCw className={busy === null ? 'h-4 w-4' : 'h-4 w-4 opacity-50'} />

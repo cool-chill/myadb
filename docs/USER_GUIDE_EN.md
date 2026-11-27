@@ -130,11 +130,10 @@ su -c '/data/adb/modules/myadb/bin/adbctl boot on --port 5555'
 | Language | Chinese / English, written to `language`, applied immediately |
 | Set system USB debugging when enabling | `toggle_adb_enabled` |
 | Restore USB debugging state when disabling | `restore_adb_enabled` |
-| Authorized devices | list key comments and MD5 fingerprints; delete a single authorization |
-| USB and device | USB debugging, developer options, charging / MTP / PTP / RNDIS |
-| Ongoing notification | refresh ADB status every 15 seconds; tapping does nothing |
+| Authorized devices | list key comments and MD5 fingerprints; delete one or revoke all |
+| USB and device | USB debugging, developer options, wireless debugging, authorization lifetime, charging / MTP / PTP / NCM / RNDIS / MIDI |
 | ADB key path | Path used by import/backup/restore, default `/sdcard/adb_keys` |
-| Clear keys | Second confirmation; the system backs up first, then empties |
+| Import / restore / clear | Results appear in the card; empty paths disable import and restore; restore backs up first |
 
 ## 7. CLI reference
 
@@ -158,13 +157,13 @@ CLI conventions:
 | `adbctl boot` | `on\|off [--port N]` | Start-on-boot config |
 | `adbctl doctor` | `--json` | Environment diagnostics |
 | `adbctl log` | `[-n N]` | Recent logs |
+| `adbctl snapshot` | `--with status,config[,usb,keys]` | Read several sections in one call |
 | `adbctl keys` | `list \| import <path> \| backup <path> \| restore <path> \| remove <ID> \| clear` | Keys and authorized devices |
-| `adbctl usb` | `status \| set adb\|developer on\|off \| mode charging\|mtp\|ptp\|rndis\|midi` | USB debugging, developer options and USB mode |
-| `adbctl notify` | none | Publish one status notification now |
-| `adbctl notify-daemon` | none | Start or stop the notification daemon |
+| `adbctl usb` | `status \| set adb\|developer\|wireless on\|off \| mode charging\|mtp\|ptp\|rndis\|ncm\|midi \| timeout DAYS` | USB debugging, wireless debugging, USB mode and authorization lifetime |
 | `adbctl config` | `[get KEY \| set KEY VALUE]` | Read or write config |
 | `adbctl boot-apply` | none | Internal command used by `service.sh` |
 | `adbctl refresh-desc` | none | Internal command to refresh the manager description |
+| `adbctl cleanup-legacy-notify` | none | Internal command to stop the old notification daemon |
 
 ### 7.2 Status JSON
 
@@ -215,6 +214,7 @@ Field reference:
 | `13` | No root | Grant root or use `su -c` |
 | `14` | Invalid port | Use `1024–65535` |
 | `15` | Other system error | Check logs and `doctor` |
+| `16` | Keys were written but the framework cache was not cleared | Reboot and retry; `doctor` shows the temporary key store |
 
 ### 7.4 Recipes
 
@@ -265,7 +265,6 @@ su -c '/data/adb/modules/myadb/bin/adbctl status --json'
 | `retry` | `3` | `1–10` | Boot retry count |
 | `retry_interval` | `10` | `1–120` | Retry interval (seconds) |
 | `language` | `zh` | `zh` / `en` | WebUI language |
-| `notification` | `true` | `true` / `false` | Run the ongoing notification daemon |
 
 ### 8.2 Storage and precedence
 
@@ -293,7 +292,6 @@ su -c '/data/adb/modules/myadb/bin/adbctl config'
 | `state` | `state`, `port`, `prev_port`, `prev_adb_enabled`, `timestamp` |
 | `log/adbctl.log` | Timestamp + operation + result, rolling 200 lines |
 | `backup/` | Output directory for key backups |
-| `run/notify.pid` | Notification daemon PID; absent when it is not running |
 
 Log example:
 
@@ -337,7 +335,7 @@ su -c '/data/adb/modules/myadb/bin/adbctl keys clear'
 
 Before clearing, the file is copied to `/data/adb/modules/myadb/backup/adb_keys.<timestamp>` with mode `600`.
 
-## 10. Device authorization, USB and notifications
+## 10. Device authorization, USB and notification migration
 
 ### 10.1 Authorized devices
 
@@ -346,6 +344,7 @@ The **Authorized devices** card on the WebUI Settings page lists entries from `/
 - Shows the comment (for example `desktop@example`), MD5 fingerprint and algorithm.
 - Never shows key material.
 - Deleting one authorization creates an automatic backup under the module `backup/` directory.
+- Deletion also clears the framework authorization cache so old keys do not return when a new device authorizes.
 - Deleting the current computer's key requires that computer to authorize again.
 
 CLI:
@@ -364,7 +363,9 @@ The **USB and device** card on the Settings page provides:
 
 - USB debugging switch (`adb_enabled`).
 - Developer options switch (`development_settings_enabled`).
-- USB modes: charging, file transfer (MTP), photo transfer (PTP), USB tethering (RNDIS).
+- Wireless debugging switch (`adb_wifi_enabled`); it may conflict with the module TCP port.
+- USB modes: charging, file transfer (MTP), photo transfer (PTP), USB tethering (NCM / RNDIS), MIDI.
+- Authorization lifetime: never, 7 days or 30 days.
 
 CLI:
 
@@ -375,38 +376,25 @@ su -c '/data/adb/modules/myadb/bin/adbctl usb status'
 # Enable developer options
 su -c '/data/adb/modules/myadb/bin/adbctl usb set developer on'
 
+# Enable wireless debugging
+su -c '/data/adb/modules/myadb/bin/adbctl usb set wireless on'
+
 # Switch to file transfer
 su -c '/data/adb/modules/myadb/bin/adbctl usb mode mtp'
+
+# Set the authorization lifetime to 7 days
+su -c '/data/adb/modules/myadb/bin/adbctl usb timeout 7'
 ```
 
-Changing the USB mode resets the USB interface and may briefly drop USB/ADB; reconnect after enumeration. Turning off USB debugging also drops the current ADB connection.
+Changing the USB mode resets the USB interface and may briefly drop USB/ADB; reconnect after enumeration. Tethering tries NCM first and falls back to RNDIS. Turning off USB debugging also drops the current ADB connection.
 
-### 10.3 Ongoing notification
+### 10.3 Notification removal and upgrade
 
-After boot the module starts a shell daemon that publishes an ADB status notification every 15 seconds:
+Since v1.1.0 the module posts no ongoing notification, so there is no sound, popup or vibration. Status lives in the manager module description and the WebUI.
 
-- Title and text follow the state and language.
-- Shows the port, listener result and device IP.
-- The notification is posted by shell, so the system may label it as "Shell".
-- Shell notifications cannot set a click action on Android 11+; tapping does not navigate. Open the WebUI from the manager.
-- If you swipe it away, the next refresh brings it back.
-- Disabling only stops refreshes; an existing notification must be swiped away manually.
-
-Disable it in WebUI Settings -> Behavior -> Ongoing notification, or:
-
-```bash
-# Disable the notification and stop the daemon
-su -c '/data/adb/modules/myadb/bin/adbctl config set notification false'
-su -c '/data/adb/modules/myadb/bin/adbctl notify-daemon'
-```
-
-Enable:
-
-```bash
-# Enable the notification and start the daemon
-su -c '/data/adb/modules/myadb/bin/adbctl config set notification true'
-su -c '/data/adb/modules/myadb/bin/adbctl notify-daemon'
-```
+- On upgrade `service.sh` calls `cleanup-legacy-notify` and stops the old notification daemon.
+- An old notification may linger briefly; swipe it away or reboot.
+- The `notification` config key is ignored and the installer tries to remove it from existing config.
 
 ## 11. Diagnostics and logs
 
@@ -453,11 +441,11 @@ Check in this order:
 6. **Network**: same LAN, no client isolation, firewall allows the port.
 7. **WebView**: check the banner at the top of the page.
 
-USB and notification issues:
+USB issues:
 
 - ADB drops after a USB mode change: wait for USB re-enumeration, replug or reboot if needed.
-- Notification tap does nothing: this is an Android 11+ shell notification limitation; open the WebUI from the manager.
-- Notification is not updating: confirm `notification=true` and run `adbctl notify-daemon`, then check `run/notify.pid`.
+- A deleted authorization comes back: make sure `keys remove` returned `durable=true`; reboot and retry when it returns 16.
+- Wireless debugging conflicts with the module port: keep only one ADB channel.
 
 Common fixes:
 
@@ -486,7 +474,7 @@ getprop service.adb.tcp.port
 1. Remove the module in the manager.
 2. `uninstall.sh` tries to turn the port off and removes logs, backups, state and config.
 3. `/data/misc/adb/adb_keys` is not removed.
-4. The notification daemon stops; an existing notification may remain until swiped.
+4. The legacy notification daemon is cleaned up; an existing notification may remain until swiped.
 
 ### 12.3 Recovery
 
@@ -507,7 +495,7 @@ setprop ctl.restart adbd
 - Never upload `adb_keys` backups to public locations.
 - Avoid leaving it enabled on public Wi-Fi.
 - The tool never bypasses system security policy; when `listen_addrs` takes over, it stops by design.
-- The ongoing notification is posted by shell and may appear as "Shell"; it is display-only and has no click action.
+- Avoid enabling wireless debugging and the module TCP port at the same time; they may contend for the ADB channel.
 
 ## 15. FAQ
 

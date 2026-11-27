@@ -15,6 +15,9 @@ interface MockUsb {
   functions: string[]
   mode: string
   supportsUsb: boolean
+  wifiSupported: boolean
+  wifiEnabled: number
+  allowedConnectionTime: number
 }
 
 interface MockState {
@@ -40,7 +43,6 @@ function defaultState(): MockState {
       enabled: true,
       toggle_adb_enabled: true,
       restore_adb_enabled: true,
-      notification: true,
       retry: 3,
       retry_interval: 10,
       language: 'zh',
@@ -51,6 +53,9 @@ function defaultState(): MockState {
       functions: ['mtp', 'adb'],
       mode: 'mtp',
       supportsUsb: true,
+      wifiSupported: true,
+      wifiEnabled: 0,
+      allowedConnectionTime: 0,
     },
     keys: [
       {
@@ -188,9 +193,46 @@ function doctorOf(s: MockState): Doctor {
   }
 }
 
+function usbOf(s: MockState) {
+  return {
+    schema: 1,
+    supports_usb: s.usb.supportsUsb,
+    adb_enabled: s.usb.adbEnabled,
+    developer_enabled: s.usb.developerEnabled,
+    functions: s.usb.functions,
+    mode: s.usb.mode,
+    usb_config: s.usb.functions.join(','),
+    usb_state: 'CONFIGURED',
+    persist_usb_config: 'mtp,adb',
+    adb_wifi_supported: s.usb.wifiSupported,
+    adb_wifi_enabled: s.usb.wifiEnabled,
+    adb_allowed_connection_time: s.usb.allowedConnectionTime,
+  }
+}
+
 export async function mockExec(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   await delay(160)
   const [command, ...rest] = args
+
+  if (command === 'snapshot') {
+    const index = rest.indexOf('--with')
+    const raw = index >= 0 ? rest[index + 1] : 'status,config'
+    const sections = raw ? raw.split(',').filter(Boolean) : []
+    const allowed = new Set(['status', 'config', 'usb', 'keys'])
+    if (sections.length === 0 || sections.some((section) => !allowed.has(section))) {
+      return err(15, 'invalid snapshot section')
+    }
+    const payload: Record<string, unknown> = { schema: 1, sections, errors: {} }
+    for (const section of sections) {
+      if (section === 'status') payload.status = statusOf(state)
+      if (section === 'config') payload.config = state.config
+      if (section === 'keys') {
+        payload.keys = state.keys.map((key, keyIndex) => ({ index: keyIndex + 1, ...key }))
+      }
+      if (section === 'usb') payload.usb = usbOf(state)
+    }
+    return ok(payload)
+  }
 
   switch (command) {
     case 'status':
@@ -266,14 +308,7 @@ export async function mockExec(args: string[]): Promise<{ code: number; stdout: 
     case 'usb': {
       const action = rest[0]
       if (action === 'status') {
-        return ok({
-          schema: 1,
-          supports_usb: state.usb.supportsUsb,
-          adb_enabled: state.usb.adbEnabled,
-          developer_enabled: state.usb.developerEnabled,
-          functions: state.usb.functions,
-          mode: state.usb.mode,
-        })
+        return ok(usbOf(state))
       }
       if (action === 'set') {
         const key = rest[1]
@@ -283,6 +318,9 @@ export async function mockExec(args: string[]): Promise<{ code: number; stdout: 
           state.adbEnabled = state.usb.adbEnabled
         } else if (key === 'developer') {
           state.usb.developerEnabled = enabled ? 1 : 0
+        } else if (key === 'wireless') {
+          if (!state.usb.wifiSupported) return err(15, 'wireless debugging unsupported')
+          state.usb.wifiEnabled = enabled ? 1 : 0
         } else {
           return err(15, 'unknown usb setting')
         }
@@ -290,19 +328,34 @@ export async function mockExec(args: string[]): Promise<{ code: number; stdout: 
         persist()
         return ok({ ok: true, error_code: 0, key, value: enabled ? 1 : 0 })
       }
+      if (action === 'timeout') {
+        const days = Number(rest[1])
+        if (!Number.isInteger(days) || days < 0 || days > 365) return err(15, 'invalid timeout')
+        state.usb.allowedConnectionTime = days * 86400000
+        addLog(`usb timeout days=${days}`)
+        persist()
+        return ok({
+          ok: true,
+          error_code: 0,
+          days,
+          adb_allowed_connection_time: state.usb.allowedConnectionTime,
+        })
+      }
       if (action === 'mode') {
         const mode = rest[1]
-        if (!['charging', 'mtp', 'ptp', 'rndis', 'midi'].includes(mode)) {
+        if (!['charging', 'mtp', 'ptp', 'rndis', 'ncm', 'midi'].includes(mode)) {
           return err(15, 'invalid usb mode')
         }
-        const functions = mode === 'charging' ? [] : [mode, ...(state.usb.adbEnabled === 1 ? ['adb'] : [])]
-        state.usb.mode = mode
+        const applied = mode === 'rndis' ? 'ncm' : mode
+        const functions =
+          applied === 'charging' ? [] : [applied, ...(state.usb.adbEnabled === 1 ? ['adb'] : [])]
+        state.usb.mode = applied
         state.usb.functions = functions
         addLog(`usb mode=${mode} functions=${functions.join(',')}`)
         persist()
-        return ok({ ok: true, error_code: 0, mode, functions })
+        return ok({ ok: true, error_code: 0, mode: applied, functions })
       }
-      return err(15, 'usb requires status|set|mode')
+      return err(15, 'usb requires status|set|mode|timeout')
     }
 
     case 'keys': {
@@ -322,6 +375,8 @@ export async function mockExec(args: string[]): Promise<{ code: number; stdout: 
           error_code: 0,
           removed: 1,
           backup: '/data/adb/modules/myadb/backup/adb_keys.mock',
+          durable: true,
+          adbd_restarted: true,
         })
       }
       if (action === 'backup') {
@@ -334,7 +389,13 @@ export async function mockExec(args: string[]): Promise<{ code: number; stdout: 
         state.keys = []
         addLog('keys clear backup=/data/adb/modules/myadb/backup/adb_keys.mock')
         persist()
-        return ok({ ok: true, error_code: 0, backup: '/data/adb/modules/myadb/backup/adb_keys.mock' })
+        return ok({
+          ok: true,
+          error_code: 0,
+          backup: '/data/adb/modules/myadb/backup/adb_keys.mock',
+          durable: true,
+          adbd_restarted: true,
+        })
       }
       if (action === 'import') {
         state.keys.push({
@@ -351,11 +412,8 @@ export async function mockExec(args: string[]): Promise<{ code: number; stdout: 
       return ok({ ok: true, error_code: 0 })
     }
 
-    case 'notify':
-      return ok({ ok: true, error_code: 0 })
-
-    case 'notify-daemon':
-      return ok({ ok: true, enabled: state.config.notification })
+    case 'cleanup-legacy-notify':
+      return ok({ ok: true, error_code: 0, stopped: false })
 
     default:
       return err(15, `unknown command: ${command ?? ''}`)

@@ -2,6 +2,43 @@
 
 所有版本变更记录。版本号与 `module/module.prop` 的 `version` 保持同步。
 
+## v1.1.0 - 2026-11-27
+
+GitHub Release：<https://github.com/cool-chill/myadb/releases/tag/v1.1.0>
+
+### 新增
+
+- `adbctl snapshot --with status,config,usb,keys`：一次返回多段只读 JSON，WebUI 首屏只启动一次 `adbctl`。
+- `usb set wireless on|off`：无线调试开关，写入并回读 `adb_wifi_enabled`。
+- `usb timeout 0|7|30`：设置授权有效期，写入 `adb_allowed_connection_time`。
+- `usb mode ncm` 与 `usb mode midi`；`usb mode rndis` 作为网络共享入口，优先尝试 NCM 并回退 RNDIS。
+- `doctor` 输出 `temp_keys_exists`、`temp_keys_count`、`adb_wifi_enabled`，并在无线调试与模块端口并存时给出警告。
+- WebUI 设置页：ADB 密钥操作就地反馈、空路径禁用、恢复二次确认并自动备份、撤销全部授权。
+- WebUI 设置页：MIDI、NCM、无线调试、授权有效期与 USB 配置/状态展示。
+- WebUI 使用快照与 1.5 秒短缓存，设置页按需懒加载。
+- 新增退出码 `16`：密钥已写入但框架授权缓存未清除，需要重启。
+
+### 变更
+
+- 密钥删除改为持久删除：先调用 `IAdbManager.clearDebuggingKeys()`，等待 `adb_temp_keys.xml` 清理后再原子写回剩余密钥并重启 adbd。
+- 密钥导入与恢复在写入前同步框架缓存，失败时返回 `16` 并保留备份。
+- 设置页不再提供常驻通知开关；`config` 不再输出 `notification`，旧配置键会被忽略并清理。
+- `service.sh` 与 `uninstall.sh` 改用 `cleanup-legacy-notify`，停止旧版通知守护进程。
+- `set-port` 空闲时也刷新管理器模块描述。
+
+### 修复
+
+- 删除全部授权后，新设备授权导致旧密钥回弹。
+- ADB 密钥操作缺少可视反馈、路径为空仍可提交。
+- 常驻通知会响铃、弹窗或振动的问题（改为完全不发布通知）。
+- 主页与设置页重复调用 `adbctl` 导致的卡顿。
+
+### 移除
+
+- `adbctl notify`、`adbctl notify-daemon`、`adbctl notify-loop` 与常驻通知守护进程。
+- `notification` 配置键及 WebUI 通知开关。
+- 模块脚本中所有 `cmd notification post` 调用。
+
 ## v1.0.0 - 2026-11-28
 
 GitHub Release：<https://github.com/cool-chill/myadb/releases/tag/v1.0.0>

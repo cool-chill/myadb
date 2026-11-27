@@ -1,6 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import { describe, expect, it } from 'vitest'
-import { commandFor, fetchKeys, fetchUsb, isNativeBridge, runAdbctl, shellQuote } from '@/lib/bridge'
+import {
+  commandFor,
+  fetchKeys,
+  fetchSnapshot,
+  fetchUsb,
+  getCacheStats,
+  invalidateCache,
+  isNativeBridge,
+  runAdbctl,
+  setConfig,
+  shellQuote,
+} from '@/lib/bridge'
 import { parseStatus } from '@/lib/schema'
 
 describe('bridge command construction', () => {
@@ -40,5 +51,39 @@ describe('mock bridge', () => {
   it('rejects an out-of-range port', async () => {
     const raw = await runAdbctl(['enable', '--port', '80'])
     expect(raw.code).toBe(14)
+  })
+})
+
+describe('snapshot bridge', () => {
+  it('loads several sections in one call', async () => {
+    invalidateCache()
+    const snapshot = await fetchSnapshot(['status', 'config', 'usb', 'keys'])
+    expect(snapshot.status?.state).toBe('ACTIVE')
+    expect(snapshot.config?.language).toBe('zh')
+    expect(snapshot.usb?.supports_usb).toBe(true)
+    expect(snapshot.keys?.length).toBeGreaterThan(0)
+    expect(snapshot.errors).toEqual({})
+  })
+
+  it('deduplicates identical requests inside the TTL', async () => {
+    invalidateCache()
+    const before = getCacheStats()
+    const [first, second] = await Promise.all([
+      fetchSnapshot(['status', 'config']),
+      fetchSnapshot(['status', 'config']),
+    ])
+    expect(first).toEqual(second)
+    expect(getCacheStats().hits - before.hits).toBe(1)
+  })
+
+  it('drops cached sections after a mutation', async () => {
+    invalidateCache()
+    await fetchSnapshot(['config'])
+    const outcome = await setConfig('language', 'en')
+    expect(outcome.code).toBe(0)
+    expect(getCacheStats().size).toBe(0)
+    const snapshot = await fetchSnapshot(['config'])
+    expect(snapshot.config?.language).toBe('en')
+    await setConfig('language', 'zh')
   })
 })

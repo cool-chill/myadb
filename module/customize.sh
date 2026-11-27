@@ -18,9 +18,10 @@ restore_adb_enabled=true
 retry=3
 retry_interval=10
 language=zh
-notification=true
 EOF
 fi
+
+sed -i '/^notification=/d' "$MODDIR/config.conf" 2>/dev/null || true
 
 if command -v ksud >/dev/null 2>&1; then
   ksud module config --internal myadb set port 5555 >/dev/null 2>&1 || true
@@ -30,7 +31,7 @@ if command -v ksud >/dev/null 2>&1; then
   ksud module config --internal myadb set retry 3 >/dev/null 2>&1 || true
   ksud module config --internal myadb set retry_interval 10 >/dev/null 2>&1 || true
   ksud module config --internal myadb set language zh >/dev/null 2>&1 || true
-  ksud module config --internal myadb set notification true >/dev/null 2>&1 || true
+  ksud module config --internal myadb unset notification >/dev/null 2>&1 || true
 fi
 
 exit 0

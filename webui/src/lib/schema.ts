@@ -30,7 +30,6 @@ export const configSchema = z.object({
   enabled: z.boolean(),
   toggle_adb_enabled: z.boolean(),
   restore_adb_enabled: z.boolean(),
-  notification: z.boolean(),
   retry: z.number().int(),
   retry_interval: z.number().int(),
   language: languageSchema,
@@ -69,7 +68,13 @@ export const usbSchema = z.object({
   adb_enabled: z.number().int(),
   developer_enabled: z.number().int(),
   functions: z.array(z.string()),
-  mode: z.enum(['mtp', 'ptp', 'rndis', 'midi', 'charging', 'unknown']),
+  mode: z.enum(['mtp', 'ptp', 'rndis', 'ncm', 'midi', 'charging', 'unknown']),
+  usb_config: z.string(),
+  usb_state: z.string(),
+  persist_usb_config: z.string(),
+  adb_wifi_supported: z.boolean(),
+  adb_wifi_enabled: z.number().int(),
+  adb_allowed_connection_time: z.number().int(),
 })
 export type UsbState = z.infer<typeof usbSchema>
 
@@ -99,11 +104,28 @@ export const resultSchema = z
     added: z.number().int().optional(),
     skipped: z.number().int().optional(),
     invalid: z.number().int().optional(),
+    removed: z.number().int().optional(),
     path: z.string().optional(),
     backup: z.string().optional(),
+    durable: z.boolean().optional(),
+    adbd_restarted: z.boolean().optional(),
+    temp_store_removed: z.boolean().optional(),
+    days: z.number().int().optional(),
+    adb_allowed_connection_time: z.number().int().optional(),
   })
   .passthrough()
 export type CommandResultBody = z.infer<typeof resultSchema>
+
+export const snapshotSchema = z.object({
+  schema: z.number().int(),
+  sections: z.array(z.string()),
+  status: statusSchema.optional(),
+  config: configSchema.optional(),
+  usb: usbSchema.optional(),
+  keys: z.array(keyEntrySchema).optional(),
+  errors: z.record(z.string(), z.number().int()).optional(),
+})
+export type Snapshot = z.infer<typeof snapshotSchema>
 
 function parseJson(raw: string): unknown {
   try {
@@ -145,6 +167,11 @@ export function parseLog(raw: string): LogResult | null {
 
 export function parseResult(raw: string): CommandResultBody | null {
   const result = resultSchema.safeParse(parseJson(raw))
+  return result.success ? result.data : null
+}
+
+export function parseSnapshot(raw: string): Snapshot | null {
+  const result = snapshotSchema.safeParse(parseJson(raw))
   return result.success ? result.data : null
 }
 

@@ -14,7 +14,8 @@ MyADB 是一个 KernelSU / Magisk / APatch 模块，用于控制系统 adbd 的�
 - 端口占用检测，报告占用者 uid/pid。
 - ADB 密钥导入、备份、恢复、清除；已授权设备列表与单条删除。
 - USB 调试、开发者选项与 USB 模式控制。
-- 常驻状态通知（shell，15 秒刷新）。
+- 无常驻通知，状态由管理器模块描述与 WebUI 展示。
+- WebUI 通过 `snapshot` 快照与短缓存减少 `adbctl` 调用。
 - 中英双语 WebUI，默认中文。
 
 源码仓库：<https://github.com/cool-chill/myadb>
@@ -41,10 +42,10 @@ MyADB 是一个 KernelSU / Magisk / APatch 模块，用于控制系统 adbd 的�
 | `module/module.prop` | 模块元数据（id、版本、作者、描述） |
 | `module/customize.sh` | 安装时初始化配置与权限 |
 | `module/post-fs-data.sh` | 早期目录准备，不动 adbd |
-| `module/service.sh` | 等 `sys.boot_completed` 后调用 `adbctl boot-apply` 与 `adbctl notify-daemon` |
+| `module/service.sh` | 等 `sys.boot_completed` 后调用 `adbctl boot-apply` 与 `adbctl cleanup-legacy-notify` |
 | `module/boot-completed.sh` | 补一次状态校验并刷新管理器描述 |
 | `module/action.sh` | 打开 WebUI，或输出状态 JSON |
-| `module/uninstall.sh` | 关闭端口、停止通知守护进程并清理运行期文件 |
+| `module/uninstall.sh` | 关闭端口、清理旧通知守护进程并清理运行期文件 |
 | `module/bin/adbctl` | 生成物，与 `core/adbctl.sh` 保持一致 |
 | `module/webroot/` | 生成物，WebUI 静态资源 |
 | `webui/src/lib/bridge.ts` | 原生 `ksu` 封装、命令拼装、开发 mock 切换 |
@@ -135,10 +136,11 @@ sh tests/adbctl.test.sh
 | `boot-apply` | 内部命令，开机时按 `retry`/`retry_interval` 调用 `enable` |
 | `doctor --json` | 环境诊断 |
 | `log -n N` | 最近日志 JSON 数组 |
+| `snapshot [--with status,config,usb,keys]` | 一次返回多段只读 JSON |
 | `keys list` | 已授权设备列表（注释、MD5 指纹，不含密钥） |
-| `keys import\|backup\|restore\|remove <ID>\|clear` | 密钥与授权设备管理 |
-| `usb status\|set adb\|developer on\|off\|mode charging\|mtp\|ptp\|rndis\|midi` | USB 调试、开发者选项与 USB 模式 |
-| `notify` / `notify-daemon` / `notify-loop` | 即时状态通知、通知守护进程启动/停止、内部循环 |
+| `keys import\|backup\|restore\|remove <ID>\|clear` | 密钥与授权设备管理；删除/清除持久化并可能返回 16 |
+| `usb status\|set adb\|developer\|wireless on\|off\|mode charging\|mtp\|ptp\|rndis\|ncm\|midi\|timeout DAYS` | USB 调试、无线调试、USB 模式与授权有效期 |
+| `cleanup-legacy-notify` | 内部命令，停止旧版通知守护进程 |
 | `config ...` | 配置读写 |
 | `refresh-desc` | 更新 `ksud` 的 `override.description` |
 
@@ -149,7 +151,7 @@ sh tests/adbctl.test.sh
 - 默认值由 `cfg_default` 提供。
 - 读取顺序：`ksud module config`（存在时）→ `$MODDIR/config.conf` → 默认值。
 - 写入：同时写 `$MODDIR/config.conf` 与 `ksud module config`（存在时）。
-- 合法键：`port`、`enabled`、`toggle_adb_enabled`、`restore_adb_enabled`、`retry`、`retry_interval`、`language`、`notification`。
+- 合法键：`port`、`enabled`、`toggle_adb_enabled`、`restore_adb_enabled`、`retry`、`retry_interval`、`language`。
 
 运行期文件：
 
@@ -157,7 +159,6 @@ sh tests/adbctl.test.sh
 - `$MODDIR/state`：`state`、`port`、`prev_port`、`prev_adb_enabled`、`timestamp`。
 - `$MODDIR/log/adbctl.log`：滚动 200 行。
 - `$MODDIR/backup/`：密钥备份。
-- `$MODDIR/run/notify.pid`：通知守护进程 PID；不存在表示未运行。
 
 监听校验：
 
@@ -182,10 +183,10 @@ sh tests/adbctl.test.sh
 |---|---|
 | `customize.sh` | 设置 `bin/adbctl` 权限，初始化 `config.conf`，同步 KSU 配置；不自动开启端口 |
 | `post-fs-data.sh` | 只建目录与权限；不要动 adbd |
-| `service.sh` | 最多等 120 秒 `sys.boot_completed`，然后 `adbctl boot-apply` 与 `adbctl notify-daemon` |
+| `service.sh` | 最多等 120 秒 `sys.boot_completed`，然后 `adbctl boot-apply` 与 `adbctl cleanup-legacy-notify` |
 | `boot-completed.sh` | `status` + `refresh-desc` |
 | `action.sh` | 依次探测 KSU WebUI、MMRL，最后输出状态 JSON |
-| `uninstall.sh` | 关闭端口，停止通知守护进程，删除日志/备份/state/config，不动系统 `adb_keys` |
+| `uninstall.sh` | 关闭端口，清理旧通知守护进程，删除日志/备份/state/config，不动系统 `adb_keys` |
 
 所有脚本使用 POSIX sh，必须通过 `shellcheck -s sh`。`MODDIR` 解析要有 `/data/adb/modules/myadb` 兜底。
 
@@ -199,7 +200,8 @@ sh tests/adbctl.test.sh
 - `schema.ts` 必须先校验 CLI 输出，解析失败不能让页面崩溃。
 - 所有操作完成后重新拉取 `status` 与 `config`，不做乐观更新。
 - 错误码通过 `errorRef` 映射到 `error.*` 文案。
-- 设置页包含已授权设备列表、USB 控制与常驻通知开关；删除授权会二次确认。
+- 设置页包含已授权设备列表、USB 控制与 ADB 密钥反馈；删除授权会二次确认。
+- 页面首屏使用 `fetchSnapshot`，变更成功后必须清空前端缓存。
 - 低版本 WebView 提示条使用内联样式，不依赖 Tailwind。
 - 安全区使用 `env(safe-area-inset-*)`。
 
@@ -266,7 +268,7 @@ sh tests/adbctl.test.sh
 
 - `shellcheck -s sh` 必须零告警。
 - `tests/adbctl.test.sh` 使用临时目录伪造 `/proc`、`getprop`、`setprop`、`settings`、`ip`、`id`。
-- 覆盖：ACTIVE/IDLE/DEGRADED/BLOCKED、成功、幂等、端口占用、回滚、非法端口、配置、密钥列表/删除、USB 状态与模式、通知、日志、doctor、adb_enabled 快照恢复。
+- 覆盖：ACTIVE/IDLE/DEGRADED/BLOCKED、成功、幂等、端口占用、回滚、非法端口、配置、密钥持久删除/回退、USB 状态/模式/无线/有效期、快照、旧通知清理、日志、doctor、adb_enabled 快照恢复。
 - 测试脚本不能依赖真实 Android 环境，也不能依赖宿主机 root。
 
 ### 8.2 WebUI
@@ -289,7 +291,7 @@ sh tests/adbctl.test.sh
 diff -u core/adbctl.sh module/bin/adbctl
 ```
 
-当前基线（v1.0.0）：adbctl 集成测试 87 项、Vitest 30 项、i18n 143 键。数字会随功能变化，以命令结果为准。
+当前基线（v1.1.0）：adbctl 集成测试 128 项、Vitest 38 项、i18n 160 键。数字会随功能变化，以命令结果为准。
 
 ## 9. CI
 
@@ -346,6 +348,8 @@ git push origin v1.1.0
 | adbd 重启 | 端口变更必然重启 adbd，现有连接断开；不要试图避免 |
 | `listen_addrs` | 非空时必须拒绝接管，返回 10 |
 | 端口占用 | 不杀进程，只报告 uid/pid |
+| USB 模式切换 | 会重置 USB 接口，可能短暂断开 USB/ADB；失败时返回 15 |
+| 密钥文件换行 | 导入前必须确保已有文件以换行结尾，否则新行会拼接到上一条注释 |
 | 配置优先级 | KSU 环境优先读 `ksud`，Magisk/APatch 读本地文件 |
 | 生成物 | 不要直接编辑 `module/bin/adbctl` 或 `module/webroot`，改源码后重新生成 |
 | `base: './'` | 绝对路径在 WebView 中会 404，导致白屏 |
@@ -358,13 +362,10 @@ git push origin v1.1.0
 | log 滚动 | 单文件最多 200 行，避免无限增长 |
 | zip 权限 | 模块脚本应保持可执行位，打包后用 `unzip -Z` 检查 |
 | 旧 WebView | 提示条必须用内联样式，不能依赖 Tailwind |
-| Shell 通知点击 | Android 11+ 的 `cmd notification post` 由 shell 发布时无法创建点击 Intent（`getIntentSender need uid=1000`），因此通知只展示状态 |
-| 通知发布身份 | 必须通过 `su 2000 -c` 以 shell 身份发布；root 直接发布会失败 |
-| USB 模式切换 | 会重置 USB 接口，可能短暂断开 USB/ADB；失败时返回 15 |
-| 密钥文件换行 | 导入前必须确保已有文件以换行结尾，否则新行会拼接到上一条注释 |
-| 通知守护进程 | adbd 重启或进程被杀后可能退出；执行 `notify-daemon` 或重启模块恢复 |
-| 通知关闭 | 停止刷新不会移除已发布的通知，需要手动划掉 |
-| 卸载 | 不删除系统 `adb_keys`；已发布通知可能残留，可手动划掉 |
+| 密钥框架缓存 | 删除授权必须调用 `service call adb 3` 并等待 `adb_temp_keys.xml` 消失后再写回，否则旧密钥会回弹 |
+| 密钥清理失败 | 返回 `16`，文件已写入但需要重启；不要把它当成普通失败重试 |
+| 无线调试冲突 | `adb_wifi_enabled=1` 与模块明文端口可能争用 ADB 通道，UI 与 `doctor` 都会警告 |
+| 卸载 | 不删除系统 `adb_keys`；旧通知可能残留，可手动划掉 |
 
 ## 12. 提交与分支
 
@@ -395,15 +396,13 @@ git push origin v1.1.0
 5. 阅读 `webui/src/lib/bridge.ts` 与 `schema.ts`。
 6. 在浏览器运行 `npm run dev`，确认 mock 页面可用。
 7. 阅读 `docs/TEST_REPORT.md`，了解真实设备结果与已知环境限制。
-8. 从 Releases 下载 `myadb-v1.0.0.zip`，或运行 `./scripts/build.sh` 生成后刷入，验证开机自启、端口切换、回滚、WebUI、USB 与通知。
+8. 从 Releases 下载 `myadb-v1.1.0.zip`，或运行 `./scripts/build.sh` 生成后刷入，验证开机自启、端口切换、回滚、WebUI、密钥持久删除、USB 与无线调试。
 9. 修改一处小文案或测试，完整跑一遍检查与发布流程。
 10. 确认自己可以独立完成一次版本发布。
 
 ## 15. 当前发布状态
 
-- 最新版本：`v1.0.0`，tag 固定指向 `30917f9`；后续 `main` 文档提交不影响已发布资产。
-- GitHub Release：<https://github.com/cool-chill/myadb/releases/tag/v1.0.0>
-- 发布资产：`myadb-v1.0.0.zip`
-- Release workflow：run `46059224861`，状态 `success`。
-- CI：`module`、`webui`、`release` 最近一次均为 `success`。
-- 下一次发布：先更新 `module/module.prop` 的 `version` / `versionCode` 与 `docs/CHANGELOG.md`，再按第 10 节打新 tag；不要移动已发布的 `v1.0.0` tag。
+- 最新版本：`v1.1.0`。
+- GitHub Release：<https://github.com/cool-chill/myadb/releases/tag/v1.1.0>
+- 发布资产：`myadb-v1.1.0.zip`
+- 下一次发布：先更新 `module/module.prop` 的 `version` / `versionCode` 与 `docs/CHANGELOG.md`，再按第 10 节打新 tag；不要移动已发布的 tag。

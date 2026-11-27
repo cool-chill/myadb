@@ -78,7 +78,14 @@ EOF
 if [ "$1" = "usb" ]; then
   case "$2" in
     getFunctions) cat "$FAKE_USB_FUNCS" 2>/dev/null ;;
-    setFunctions) printf '%s' "${3:-}" >"$FAKE_USB_FUNCS" ;;
+    setFunctions)
+      if [ -n "${FAKE_USB_FAIL_MODE:-}" ]; then
+        case "${3:-}" in
+          "$FAKE_USB_FAIL_MODE" | "$FAKE_USB_FAIL_MODE,adb") exit 1 ;;
+        esac
+      fi
+      printf '%s' "${3:-}" >"$FAKE_USB_FUNCS"
+      ;;
   esac
 fi
 EOF
@@ -104,7 +111,29 @@ EOF
 
   cat >"$FAKE_BIN/cmd" <<'EOF'
 #!/bin/sh
+if [ "$1" = "adb" ] && [ "$2" = "is-wifi-supported" ]; then
+  printf '%s\n' "${FAKE_WIFI_SUPPORTED:-true}"
+  exit 0
+fi
 printf '%s\n' "$*" >>"${FAKE_CMD_LOG:-/dev/null}"
+EOF
+
+  cat >"$FAKE_BIN/service" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >>"${FAKE_SERVICE_LOG:-/dev/null}"
+if [ -n "${FAKE_SERVICE_FAIL:-}" ]; then
+  printf 'Exception occurred while executing\n'
+  exit 1
+fi
+case "$*" in
+  "call adb 3")
+    if [ -n "${FAKE_TEMP_KEYS:-}" ]; then
+      rm -f "$FAKE_TEMP_KEYS" 2>/dev/null || true
+    fi
+    printf 'Result: Parcel(00000000)\n'
+    ;;
+  *) printf 'Result: Parcel(00000000)\n' ;;
+esac
 EOF
 
   cat >"$FAKE_BIN/su" <<'EOF'
@@ -137,6 +166,7 @@ new_env() {
   export MYADB_MODDIR="$SCEN/mod"
   export MYADB_PROC_ROOT="$SCEN/proc"
   export MYADB_KEYS="$SCEN/data/adb_keys"
+  export MYADB_TEMP_KEYS="$SCEN/data/adb_temp_keys.xml"
   export MYADB_BACKUP_DIR="$SCEN/mod/backup"
   export FAKE_PROPS="$SCEN/props"
   export FAKE_SETTINGS="$SCEN/settings"
@@ -147,10 +177,15 @@ new_env() {
   : >"$FAKE_KSU_LOG"
   export FAKE_CMD_LOG="$SCEN/cmd.log"
   : >"$FAKE_CMD_LOG"
+  export FAKE_SERVICE_LOG="$SCEN/service.log"
+  : >"$FAKE_SERVICE_LOG"
+  export FAKE_TEMP_KEYS="$MYADB_TEMP_KEYS"
   export MYADB_WAIT_STEPS=3
   export MYADB_USB_SLEEP=0
   export MYADB_WAIT_INTERVAL=0
-  unset MK_LISTENER
+  export MYADB_KEY_CLEAR_WAIT=0
+  export MYADB_WIFI_SLEEP=0
+  unset MK_LISTENER FAKE_SERVICE_FAIL FAKE_USB_FAIL_MODE FAKE_WIFI_SUPPORTED
 
   cat >"$FAKE_PROPS" <<'EOF'
 service.adb.tcp.port=-1
@@ -158,6 +193,10 @@ service.adb.listen_addrs=
 init.svc.adbd=running
 ro.product.model=Test Device
 ro.build.version.release=14
+ro.build.version.sdk=34
+sys.usb.config=ncm,adb
+sys.usb.state=CONFIGURED
+persist.sys.usb.config=mtp,adb
 EOF
   printf 'adb_enabled=1\ndevelopment_settings_enabled=0\n' >"$FAKE_SETTINGS"
   printf 'mtp,adb' >"$FAKE_USB_FUNCS"
@@ -169,7 +208,6 @@ restore_adb_enabled=true
 retry=3
 retry_interval=10
 language=zh
-notification=true
 EOF
 
   cat >"$SCEN/mklistener.sh" <<'EOF'
@@ -414,6 +452,8 @@ out=$(sh "$ADBCTL" keys remove "$id")
 code=$?
 assert_equals "$code" "0" "keys remove succeeds"
 assert_contains "$out" '"removed":1' "keys remove reports one removal"
+assert_contains "$out" '"durable":true' "keys remove reports a durable removal"
+assert_contains "$(cat "$FAKE_SERVICE_LOG")" 'call adb 3' "keys remove clears framework keys"
 backup=$(printf '%s' "$out" | sed -n 's/.*"backup":"\([^"]*\)".*/\1/p')
 if [ -n "$backup" ] && [ -f "$backup" ]; then
   ok "keys remove created a backup"
@@ -425,6 +465,70 @@ assert_equals "$(grep -c -v '^#' "$MYADB_KEYS")" "1" "keys remove leaves one key
 out=$(sh "$ADBCTL" keys remove "NO-SUCH-ID")
 code=$?
 assert_equals "$code" "15" "keys remove rejects an unknown id"
+
+# ---------------------------------------------------------------------------
+# 9c2. keys: framework clear fallback and async-safe write
+# ---------------------------------------------------------------------------
+new_env keys_remove_fallback
+cat >"$SCEN/keys" <<'EOF'
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA first@test
+BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB second@test
+EOF
+sh "$ADBCTL" keys import "$SCEN/keys" >/dev/null
+id=$(sh "$ADBCTL" keys list | sed -n 's/.*"id":"\([^"]*\)"[^}]*"comment":"first@test".*/\1/p')
+export FAKE_SERVICE_FAIL=1
+out=$(sh "$ADBCTL" keys remove "$id")
+code=$?
+unset FAKE_SERVICE_FAIL
+assert_equals "$code" "16" "keys remove returns 16 when framework clear fails"
+assert_contains "$out" '"durable":false' "keys remove fallback marks the removal non-durable"
+assert_equals "$(grep -c -v '^#' "$MYADB_KEYS")" "1" "keys remove fallback still writes the remaining keys"
+if [ -f "$MYADB_TEMP_KEYS" ]; then
+  bad "keys remove fallback removes the temporary store"
+else
+  ok "keys remove fallback removes the temporary store"
+fi
+
+new_env keys_async
+cat >"$SCEN/keys" <<'EOF'
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA first@test
+BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB second@test
+EOF
+sh "$ADBCTL" keys import "$SCEN/keys" >/dev/null
+printf '<keys />\n' >"$MYADB_TEMP_KEYS"
+id=$(sh "$ADBCTL" keys list | sed -n 's/.*"id":"\([^"]*\)"[^}]*"comment":"first@test".*/\1/p')
+out=$(sh "$ADBCTL" keys remove "$id")
+assert_contains "$out" '"durable":true' "async framework clear still reports durable"
+assert_contains "$(cat "$MYADB_KEYS")" 'second@test' "async clear does not delete the newly written keys"
+if grep -q 'first@test' "$MYADB_KEYS"; then
+  bad "async clear keeps the removed key"
+else
+  ok "async clear keeps the removed key out of the file"
+fi
+
+# ---------------------------------------------------------------------------
+# 9c3. keys: clear fallback, import and restore sync the framework
+# ---------------------------------------------------------------------------
+new_env keys_clear_fallback
+printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA first@test\n' >"$MYADB_KEYS"
+export FAKE_SERVICE_FAIL=1
+out=$(sh "$ADBCTL" keys clear)
+code=$?
+unset FAKE_SERVICE_FAIL
+assert_equals "$code" "16" "keys clear returns 16 when framework clear fails"
+assert_equals "$(wc -c <"$MYADB_KEYS" | tr -d ' ')" "0" "keys clear fallback empties the file"
+
+new_env keys_framework
+printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA first@test\n' >"$MYADB_KEYS"
+cat >"$SCEN/keys" <<'EOF'
+BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB second@test
+EOF
+: >"$FAKE_SERVICE_LOG"
+sh "$ADBCTL" keys import "$SCEN/keys" >/dev/null
+assert_contains "$(cat "$FAKE_SERVICE_LOG")" 'call adb 3' "keys import clears framework keys"
+: >"$FAKE_SERVICE_LOG"
+sh "$ADBCTL" keys restore "$SCEN/keys" >/dev/null
+assert_contains "$(cat "$FAKE_SERVICE_LOG")" 'call adb 3' "keys restore clears framework keys"
 
 # ---------------------------------------------------------------------------
 # 9d. USB status and switches
@@ -447,8 +551,23 @@ assert_equals "$(cat "$FAKE_USB_FUNCS")" "ptp" "usb mode ptp excludes adb when d
 
 sh "$ADBCTL" usb set adb on >/dev/null
 out=$(sh "$ADBCTL" usb mode rndis)
-assert_contains "$out" '"mode":"rndis"' "usb mode rndis applies"
-assert_equals "$(cat "$FAKE_USB_FUNCS")" "rndis,adb" "usb mode keeps adb when enabled"
+assert_contains "$out" '"mode":"ncm"' "usb mode rndis prefers ncm"
+assert_equals "$(cat "$FAKE_USB_FUNCS")" "ncm,adb" "usb mode rndis uses ncm when available"
+
+export FAKE_USB_FAIL_MODE=ncm
+out=$(sh "$ADBCTL" usb mode rndis)
+code=$?
+unset FAKE_USB_FAIL_MODE
+assert_equals "$code" "0" "usb mode rndis falls back to rndis"
+assert_contains "$out" '"mode":"rndis"' "usb mode rndis reports the fallback mode"
+assert_equals "$(cat "$FAKE_USB_FUNCS")" "rndis,adb" "usb mode rndis writes rndis functions"
+
+out=$(sh "$ADBCTL" usb mode midi)
+assert_contains "$out" '"mode":"midi"' "usb mode midi applies"
+assert_equals "$(cat "$FAKE_USB_FUNCS")" "midi,adb" "usb mode midi keeps adb when enabled"
+
+out=$(sh "$ADBCTL" usb mode ncm)
+assert_contains "$out" '"mode":"ncm"' "usb mode ncm applies"
 
 out=$(sh "$ADBCTL" usb mode charging)
 assert_contains "$out" '"mode":"charging"' "usb mode charging applies"
@@ -458,28 +577,96 @@ out=$(sh "$ADBCTL" usb mode bogus)
 code=$?
 assert_equals "$code" "15" "usb mode rejects an unknown mode"
 
+out=$(sh "$ADBCTL" usb status)
+assert_contains "$out" '"usb_config":"ncm,adb"' "usb status reports usb_config"
+assert_contains "$out" '"usb_state":"CONFIGURED"' "usb status reports usb_state"
+assert_contains "$out" '"persist_usb_config":"mtp,adb"' "usb status reports persist config"
+assert_contains "$out" '"adb_wifi_supported":true' "usb status reports wireless support"
+assert_contains "$out" '"adb_wifi_enabled":-1' "usb status defaults wireless to -1"
+
+out=$(sh "$ADBCTL" usb set wireless on)
+assert_contains "$out" '"value":1' "usb wireless on writes value"
+assert_equals "$(sed -n 's/^adb_wifi_enabled=//p' "$FAKE_SETTINGS")" "1" "wireless debugging persisted"
+
+out=$(sh "$ADBCTL" usb timeout 7)
+assert_contains "$out" '"adb_allowed_connection_time":604800000' "usb timeout writes milliseconds"
+assert_equals "$(sed -n 's/^adb_allowed_connection_time=//p' "$FAKE_SETTINGS")" "604800000" "authorization timeout persisted"
+
+out=$(sh "$ADBCTL" usb timeout 500)
+code=$?
+assert_equals "$code" "15" "usb timeout rejects values above 365"
+
 # ---------------------------------------------------------------------------
-# 9e. shell status notification
+# 9e. legacy notification cleanup and config migration
 # ---------------------------------------------------------------------------
-new_env notify
+new_env cleanup_notify
+mkdir -p "$MYADB_MODDIR/run"
+sleep 30 &
+legacy_pid=$!
+printf '%s\n' "$legacy_pid" >"$MYADB_MODDIR/run/notify.pid"
+: >"$FAKE_CMD_LOG"
+out=$(sh "$ADBCTL" cleanup-legacy-notify)
+assert_contains "$out" '"stopped":true' "cleanup-legacy-notify stops the old daemon"
+if kill -0 "$legacy_pid" 2>/dev/null; then
+  bad "cleanup-legacy-notify kills the old daemon process"
+  kill -9 "$legacy_pid" 2>/dev/null || true
+else
+  ok "cleanup-legacy-notify kills the old daemon process"
+fi
+if [ -f "$MYADB_MODDIR/run/notify.pid" ]; then
+  bad "cleanup-legacy-notify removes the pid file"
+else
+  ok "cleanup-legacy-notify removes the pid file"
+fi
+assert_contains "$(cat "$FAKE_CMD_LOG")" 'notification cancel' "cleanup cancels the old notification"
+if grep -q 'notification post' "$FAKE_CMD_LOG"; then
+  bad "v1.1.0 never posts notifications"
+else
+  ok "v1.1.0 never posts notifications"
+fi
+if sh "$ADBCTL" notify >/dev/null 2>&1; then
+  bad "notify command is removed"
+else
+  ok "notify command is removed"
+fi
+
+new_env config_residual
+printf 'notification=true\n' >>"$SCEN/mod/config.conf"
+out=$(sh "$ADBCTL" config)
+assert_contains "$out" '"language":"zh"' "residual notification config is ignored"
+case "$out" in
+  *'"notification"'*) bad "config dump no longer exposes notification" ;;
+  *) ok "config dump no longer exposes notification" ;;
+esac
+sh "$ADBCTL" config set notification true >/dev/null 2>&1
+if [ $? -eq 15 ]; then
+  ok "config set rejects the removed notification key"
+else
+  bad "config set rejects the removed notification key"
+fi
+
+# ---------------------------------------------------------------------------
+# 9f. snapshot sections
+# ---------------------------------------------------------------------------
+new_env snapshot
 sh "$SCEN/create_listener.sh" 5555 0 4242 25555 adbd
 printf 'service.adb.tcp.port=5555\n' >>"$FAKE_PROPS"
-: >"$FAKE_CMD_LOG"
-out=$(sh "$ADBCTL" notify)
-assert_contains "$out" '"ok":true' "notify command succeeds"
-assert_contains "$(cat "$FAKE_CMD_LOG")" 'notification post' "notify posts a shell notification"
-assert_contains "$(cat "$FAKE_CMD_LOG")" 'MyADB · 运行中' "notify title reflects active state"
-assert_contains "$(cat "$FAKE_CMD_LOG")" '端口 5555' "notify text includes the port"
-assert_contains "$(cat "$FAKE_CMD_LOG")" '监听正常' "notify text includes listener state"
-assert_contains "$(cat "$FAKE_CMD_LOG")" '192.168.1.42' "notify text includes the device ip"
-sh "$ADBCTL" config set notification false >/dev/null
-assert_equals "$(sh "$ADBCTL" config get notification | sed -n 's/.*"value":"\([^"]*\)".*/\1/p')" "false" "notification config can be disabled"
-sh "$ADBCTL" notify-loop >/dev/null
-if [ -f "$MYADB_MODDIR/run/notify.pid" ]; then
-  bad "notify-loop removes its pid file when disabled"
-else
-  ok "notify-loop removes its pid file when disabled"
-fi
+out=$(sh "$ADBCTL" snapshot --with status,config)
+code=$?
+assert_equals "$code" "0" "snapshot exits 0"
+assert_contains "$out" '"sections":["status","config"]' "snapshot lists default sections"
+assert_contains "$out" '"state":"ACTIVE"' "snapshot embeds status"
+assert_contains "$out" '"language":"zh"' "snapshot embeds config"
+assert_contains "$out" '"errors":{}' "snapshot has no section errors"
+
+out=$(sh "$ADBCTL" snapshot --with config,usb,keys)
+assert_contains "$out" '"sections":["config","usb","keys"]' "snapshot accepts three sections"
+assert_contains "$out" '"usb":{' "snapshot embeds usb"
+assert_contains "$out" '"keys":[]' "snapshot embeds keys"
+
+out=$(sh "$ADBCTL" snapshot --with status,bogus)
+code=$?
+assert_equals "$code" "15" "snapshot rejects an unknown section"
 
 # ---------------------------------------------------------------------------
 # 10. log
@@ -494,10 +681,14 @@ assert_contains "$out" 'enable port=5555 result=ok' "log records enable"
 # 11. doctor
 # ---------------------------------------------------------------------------
 new_env doctor
+printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA first@test\n' >"$MYADB_KEYS"
+printf '<keys />\n' >"$MYADB_TEMP_KEYS"
 out=$(sh "$ADBCTL" doctor --json)
 assert_contains "$out" '"root":true' "doctor reports root"
 assert_contains "$out" '"model":"Test Device"' "doctor reports model"
-assert_contains "$out" '"keys_exists":false' "doctor reports missing keys"
+assert_contains "$out" '"keys_exists":true' "doctor reports keys existence"
+assert_contains "$out" '"temp_keys_exists":true' "doctor reports the temporary key store"
+assert_contains "$out" '"temp_keys_count":1' "doctor counts temporary key entries"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

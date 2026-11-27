@@ -5,6 +5,7 @@ import {
   parseDoctor,
   parseKeys,
   parseLog,
+  parseSnapshot,
   parseUsb,
   parseResult,
   parseStatus,
@@ -12,6 +13,7 @@ import {
   type Config,
   type Doctor,
   type KeyEntry,
+  type Snapshot,
   type Status,
   type UsbState,
 } from './schema'
@@ -30,6 +32,25 @@ export interface Outcome {
   body: CommandResultBody | null
   stdout: string
   stderr: string
+}
+
+export type SnapshotSection = 'status' | 'config' | 'usb' | 'keys'
+
+interface CacheEntry {
+  expires: number
+  promise: Promise<RawResult>
+}
+
+const CACHE_TTL_MS = 1500
+const cache = new Map<string, CacheEntry>()
+const cacheStats = { hits: 0, misses: 0 }
+
+export function invalidateCache(): void {
+  cache.clear()
+}
+
+export function getCacheStats(): { hits: number; misses: number; size: number } {
+  return { ...cacheStats, size: cache.size }
 }
 
 export function shellQuote(value: string): string {
@@ -94,6 +115,37 @@ async function runOutcome(args: string[], streaming = false): Promise<Outcome> {
   return { ...raw, body: parseResult(raw.stdout) }
 }
 
+async function runMutation(args: string[], streaming = false): Promise<Outcome> {
+  const outcome = await runOutcome(args, streaming)
+  if (outcome.code === 0 || outcome.code === 16) invalidateCache()
+  return outcome
+}
+
+function cachedRun(key: string, args: string[]): Promise<RawResult> {
+  const now = Date.now()
+  const hit = cache.get(key)
+  if (hit && hit.expires > now) {
+    cacheStats.hits += 1
+    return hit.promise
+  }
+  cacheStats.misses += 1
+  const promise = runAdbctl(args)
+  cache.set(key, { expires: now + CACHE_TTL_MS, promise })
+  return promise
+}
+
+export async function fetchSnapshot(
+  sections: SnapshotSection[] = ['status', 'config'],
+  options: { bypassCache?: boolean } = {},
+): Promise<Snapshot> {
+  const key = `snapshot:${sections.join(',')}`
+  const args = ['snapshot', '--with', sections.join(',')]
+  const raw = options.bypassCache ? await runAdbctl(args) : await cachedRun(key, args)
+  const snapshot = parseSnapshot(raw.stdout)
+  if (!snapshot) throw new Error('invalid snapshot payload')
+  return snapshot
+}
+
 export async function fetchStatus(): Promise<Status> {
   const raw = await runAdbctl(['status', '--json'])
   const status = parseStatus(raw.stdout)
@@ -122,29 +174,25 @@ export async function fetchLogs(lines = 50): Promise<string[]> {
 }
 
 export function enable(port: number): Promise<Outcome> {
-  return runOutcome(['enable', '--port', String(port)], true)
+  return runMutation(['enable', '--port', String(port)], true)
 }
 
 export function disable(): Promise<Outcome> {
-  return runOutcome(['disable'], true)
+  return runMutation(['disable'], true)
 }
 
 export function setPort(port: number): Promise<Outcome> {
-  return runOutcome(['set-port', String(port)], true)
+  return runMutation(['set-port', String(port)], true)
 }
 
 export function setBoot(enabled: boolean, port?: number): Promise<Outcome> {
   const args = ['boot', enabled ? 'on' : 'off']
   if (port !== undefined) args.push('--port', String(port))
-  return runOutcome(args)
-}
-
-export function syncNotifyDaemon(): Promise<Outcome> {
-  return runOutcome(['notify-daemon'])
+  return runMutation(args)
 }
 
 export function setConfig(key: string, value: string | number | boolean): Promise<Outcome> {
-  return runOutcome(['config', 'set', key, String(value)])
+  return runMutation(['config', 'set', key, String(value)])
 }
 
 export async function fetchUsb(): Promise<UsbState> {
@@ -154,12 +202,21 @@ export async function fetchUsb(): Promise<UsbState> {
   return usb
 }
 
-export function setUsbSwitch(kind: 'adb' | 'developer', enabled: boolean): Promise<Outcome> {
-  return runOutcome(['usb', 'set', kind, enabled ? 'on' : 'off'])
+export function setUsbSwitch(
+  kind: 'adb' | 'developer' | 'wireless',
+  enabled: boolean,
+): Promise<Outcome> {
+  return runMutation(['usb', 'set', kind, enabled ? 'on' : 'off'])
 }
 
-export function setUsbMode(mode: 'charging' | 'mtp' | 'ptp' | 'rndis' | 'midi'): Promise<Outcome> {
-  return runOutcome(['usb', 'mode', mode])
+export function setUsbMode(
+  mode: 'charging' | 'mtp' | 'ptp' | 'rndis' | 'ncm' | 'midi',
+): Promise<Outcome> {
+  return runMutation(['usb', 'mode', mode])
+}
+
+export function setUsbTimeout(days: number): Promise<Outcome> {
+  return runMutation(['usb', 'timeout', String(days)])
 }
 
 export async function fetchKeys(): Promise<KeyEntry[]> {
@@ -170,13 +227,16 @@ export async function fetchKeys(): Promise<KeyEntry[]> {
 }
 
 export function removeKey(id: string): Promise<Outcome> {
-  return runOutcome(['keys', 'remove', id])
+  return runMutation(['keys', 'remove', id])
 }
 
-export function keysAction(action: 'import' | 'backup' | 'restore' | 'clear', path?: string): Promise<Outcome> {
+export function keysAction(
+  action: 'import' | 'backup' | 'restore' | 'clear',
+  path?: string,
+): Promise<Outcome> {
   const args = ['keys', action]
   if (path) args.push(path)
-  return runOutcome(args)
+  return runMutation(args)
 }
 
 export function notify(message: string) {
