@@ -43,6 +43,7 @@
 | WebUI 密钥备份 | 通过，成功提示与文件哈希一致 |
 | WebUI 清除确认框 | 通过，弹窗与遮罩正常 |
 | WebUI 首屏渲染 | 通过，Shell 在 1 秒内出现；数据约 2 秒内加载完成 |
+| 实际重启开机自启 | 通过，重启后约 20 秒重连，`boot-apply` 成功，端口 5555 正常监听 |
 
 ## 3. 性能数据
 
@@ -78,17 +79,43 @@
 | WebUI 启动时重复请求 config | 由 Home / Settings 首次加载时统一设置语言 |
 | 配置读取多次调用 `ksud` | 单次 `ksud module config list` + 原子缓存 |
 
-## 5. 未覆盖项
+## 5. 实际重启验证
+
+执行 `adb reboot` 后，远程 ADB 入口短暂出现 `unauthorized`，约 20 秒后恢复为 `device`。
+
+重启后关键状态：
+
+| 项 | 值 |
+|---|---|
+| `sys.boot_completed` | `1` |
+| `service.adb.tcp.port` | `5555` |
+| `service.adb.listen_addrs` | 空 |
+| `init.svc.adbd` | `running` |
+| `status.state` | `ACTIVE` |
+| `status.listening` | `true` |
+| `boot_enabled` | `true` |
+| adb_keys | 仍为测试前内容，2 条 |
+
+重启后的日志：
+
+```text
+2026-11-28 01:45:33 enable port=5555 result=start prev_port=
+2026-11-28 01:45:33 enable port=5555 result=ok cost=0ms
+2026-11-28 01:45:33 boot-apply port=5555 result=ok attempt=1
+```
+
+结论：`service.sh` 在开机后成功调用 `adbctl boot-apply`，一次尝试即开启端口。WebUI 重新打开后显示 `ACTIVE`、端口 `5555`、监听通过、开机自启已开启。
+
+## 6. 未覆盖项
 
 以下场景未在本次远程设备测试中执行：
 
-- 实际重启后的开机自启。远程 ADB 入口可能在重启期间不可达；建议在可物理接触的设备上补测。
 - 修改为其他端口后重新连接。当前测试入口固定转发到 5555，改端口会导致远程连接断开。
 - 失败回滚注入。需制造 adbd 启动失败，风险较高，已由 Linux 集成测试覆盖。
 - Magisk 与 APatch。
 - 低于 Chromium 111 的 WebView 提示条。
 
-## 6. 复现命令
+## 7. 复现命令
 
 ```bash
 # 安装模块
@@ -111,7 +138,7 @@ adb shell 'su -c "/data/adb/modules/myadb/bin/adbctl keys restore /data/local/tm
 adb shell 'su -c "TIMEFORMAT=%R; time /data/adb/modules/myadb/bin/adbctl status --json >/dev/null"'
 ```
 
-## 7. 测试结束状态
+## 8. 测试结束状态
 
 - 模块：已安装并激活，`enabled=true`，`update=false`。
 - 端口：5555，adbd 正常监听。
