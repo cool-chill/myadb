@@ -1,0 +1,42 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+      - name: Build WebUI
+        working-directory: webui
+        run: |
+          npm ci --no-audit --no-fund
+          npm run lint
+          npm run typecheck
+          npm run i18n:check
+          npm test
+          npm run build
+      - name: Sync adbctl
+        run: install -m 755 core/adbctl.sh module/bin/adbctl
+      - name: Package module
+        run: |
+          mkdir -p dist
+          VERSION=$(sed -n 's/^version=//p' module/module.prop | head -n 1)
+          cd module
+          zip -r "../dist/myadb-${VERSION}.zip" . -x '*.DS_Store'
+      - name: Upload release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          generate_release_notes: true

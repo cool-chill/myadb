@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: GPL-3.0-only
+import { StrictMode } from 'react'
+import { createRoot } from 'react-dom/client'
+import App from './App'
+import { I18nProvider } from './i18n'
+import './index.css'
+
+const container = document.getElementById('root')
+if (!container) throw new Error('root container missing')
+
+createRoot(container).render(
+  <StrictMode>
+    <I18nProvider>
+      <App />
+    </I18nProvider>
+  </StrictMode>,
+)

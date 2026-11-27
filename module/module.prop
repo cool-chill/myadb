@@ -1,0 +1,6 @@
+id=myadb
+name=MyADB 无线调试控制器
+version=v1.0.0
+versionCode=10000
+author=coolchill
+description=控制系统 adbd 的 TCP 端口，支持自定义端口与开机自启

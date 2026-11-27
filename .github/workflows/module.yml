@@ -1,0 +1,31 @@
+name: module
+
+on:
+  push:
+    paths:
+      - 'core/**'
+      - 'module/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - '.github/workflows/module.yml'
+  pull_request:
+    paths:
+      - 'core/**'
+      - 'module/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - '.github/workflows/module.yml'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ShellCheck
+        run: shellcheck -s sh core/adbctl.sh module/*.sh tests/*.sh
+      - name: Integration tests
+        run: sh tests/adbctl.test.sh
+      - name: Check adbctl copy is in sync
+        run: |
+          sh -n module/bin/adbctl
+          diff -u core/adbctl.sh module/bin/adbctl

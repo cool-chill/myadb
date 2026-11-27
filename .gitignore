@@ -1,0 +1,6 @@
+webui/node_modules/
+webui/dist/
+dist/
+*.zip
+.DS_Store
+*.log

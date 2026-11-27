@@ -1,0 +1,35 @@
+name: webui
+
+on:
+  push:
+    paths:
+      - 'webui/**'
+      - '.github/workflows/webui.yml'
+  pull_request:
+    paths:
+      - 'webui/**'
+      - '.github/workflows/webui.yml'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: webui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run i18n:check
+      - run: npm test
+      - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: webui-dist
+          path: module/webroot
