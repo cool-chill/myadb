@@ -184,6 +184,7 @@ git push origin v1.0.0
 | WebView mock | 浏览器没有 `ksud`，bridge 走 mock 是预期行为 |
 | `settings` 缺失 | 精简 ROM 可能没有 `settings`，需容忍并返回 `-1` |
 | `ksud` 输出 | 兼容 `key=value` 与纯值，去掉包裹引号 |
+| `ksud` 上下文 | `module config` 必须带 `--internal myadb` |
 | 旧 WebView | 提示条必须内联样式 |
 | zip 权限 | 模块脚本保持可执行位 |
 | 卸载 | 不删除系统 `adb_keys` |

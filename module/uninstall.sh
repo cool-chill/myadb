@@ -16,5 +16,6 @@ setprop ctl.restart adbd >/dev/null 2>&1
 
 rm -rf "$MODDIR/log" "$MODDIR/backup" 2>/dev/null
 rm -f "$MODDIR/state" "$MODDIR/config.conf" 2>/dev/null
+rm -f "$MODDIR/.ksud.cache" "$MODDIR"/.ksud.cache.* "$MODDIR"/keys.tmp.* 2>/dev/null
 
 exit 0

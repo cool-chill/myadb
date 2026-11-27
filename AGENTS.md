@@ -56,6 +56,7 @@ MyADB 是一个 KernelSU / Magisk / APatch 模块，用于控制系统 adbd 的�
 | `.github/workflows/` | WebUI 检查、模块检查、发布 |
 | `docs/design.md` | 定稿设计方案 |
 | `docs/USER_GUIDE*.md` | 用户指南 |
+| `docs/TEST_REPORT.md` | 真机测试记录与性能数据 |
 | `README.md` / `README_EN.md` | 项目入口文档 |
 
 ## 4. 环境与工具链
@@ -158,6 +159,12 @@ sh tests/adbctl.test.sh
 2. 十六进制端口匹配。
 3. 取 inode，扫描 `/proc/<pid>/fd/*` 的 `socket:[inode]`。
 4. 监听者必须是 adbd。
+
+性能实现：
+
+- 只扫描 adbd 自己的 fd，避免为了一个端口遍历所有进程导致 `status` 变慢。
+- 端口被其他进程占用时，优先用 `ss -tlnp` 取 pid，失败再回退全量 `/proc/*/fd` 扫描。
+- `cfg_init_cache` 把 `ksud module config list` 缓存到 `$MODDIR/.ksud.cache`（临时文件原子替换），避免一次命令内多次调用 `ksud`。
 
 回滚：变更前记录 `prev_port` 与 `prev_adb_enabled`；等待监听失败时恢复属性、重启 adbd，并按 `restore_adb_enabled` 恢复 `adb_enabled`。
 
@@ -336,6 +343,8 @@ git push origin v1.0.0
 | WebView mock | 浏览器中不会注入 `ksud`，bridge 会返回假数据，这是预期行为 |
 | `settings` 缺失 | 某些精简 ROM 没有 `settings` 命令，代码需容忍并返回 `-1` |
 | `ksud` 输出 | 读取配置时要兼容 `key=value` 与纯值，并去除包裹引号 |
+| `ksud` 上下文 | KernelSU 3.2.5 的 `module config` 需要 `--internal <id>`，否则报 must be run in the context of a module |
+| `status` 性能 | 监听校验只扫 adbd fd；占用者 pid 优先用 `ss -tlnp`，不要改回全量 fd 扫描 |
 | log 滚动 | 单文件最多 200 行，避免无限增长 |
 | zip 权限 | 模块脚本应保持可执行位，打包后用 `unzip -Z` 检查 |
 | 旧 WebView | 提示条必须用内联样式，不能依赖 Tailwind |

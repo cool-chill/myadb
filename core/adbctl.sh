@@ -9,6 +9,7 @@
 set -u
 
 SCHEMA=1
+MODULE_ID=myadb
 DEFAULT_PORT=5555
 PORT_MIN=1024
 PORT_MAX=65535
@@ -39,6 +40,8 @@ PROC_ROOT=${MYADB_PROC_ROOT:-/proc}
 ADB_KEYS=${MYADB_KEYS:-/data/misc/adb/adb_keys}
 
 CONFIG_FILE="$MODDIR/config.conf"
+CFG_CACHE=""
+CFG_CACHE_READY=0
 STATE_FILE="$MODDIR/state"
 LOG_DIR="$MODDIR/log"
 LOG_FILE="$LOG_DIR/adbctl.log"
@@ -53,7 +56,11 @@ json_escape() {
 }
 
 jstr() {
-  printf '"%s"' "$(json_escape "$1")"
+  if [ -z "$1" ]; then
+    printf '""'
+  else
+    printf '"%s"' "$(json_escape "$1")"
+  fi
 }
 
 jbool() {
@@ -152,6 +159,23 @@ get_adb_enabled() {
 # Config
 # ---------------------------------------------------------------------------
 
+cfg_init_cache() {
+  [ "${CFG_CACHE_READY:-0}" = "1" ] && return 0
+  CFG_CACHE_READY=1
+  CFG_CACHE=''
+  command -v ksud >/dev/null 2>&1 || return 0
+  _cfg_tmp="$MODDIR/.ksud.cache.$$"
+  if ksud module config --internal "$MODULE_ID" list >"$_cfg_tmp" 2>/dev/null; then
+    CFG_CACHE="$MODDIR/.ksud.cache"
+    if ! mv "$_cfg_tmp" "$CFG_CACHE" 2>/dev/null; then
+      CFG_CACHE=''
+      rm -f "$_cfg_tmp" 2>/dev/null || true
+    fi
+  else
+    rm -f "$_cfg_tmp" 2>/dev/null || true
+  fi
+}
+
 cfg_default() {
   case "$1" in
     port) printf '%s' "$DEFAULT_PORT" ;;
@@ -169,8 +193,12 @@ cfg_get() {
   _cg_key=$1
   _cg_def=${2:-$(cfg_default "$1")}
   _cg_val=''
-  if command -v ksud >/dev/null 2>&1; then
-    _cg_out=$(ksud module config get "$_cg_key" 2>/dev/null) || _cg_out=''
+  if [ "${CFG_CACHE_READY:-0}" = "1" ]; then
+    if [ -n "${CFG_CACHE:-}" ] && [ -f "$CFG_CACHE" ]; then
+      _cg_val=$(sed -n "s/^${_cg_key}=//p" "$CFG_CACHE" 2>/dev/null | tail -n 1)
+    fi
+  elif command -v ksud >/dev/null 2>&1; then
+    _cg_out=$(ksud module config --internal "$MODULE_ID" get "$_cg_key" 2>/dev/null) || _cg_out=''
     case "$_cg_out" in
       *"$_cg_key="*) _cg_val=${_cg_out#*"$_cg_key="} ;;
       '') ;;
@@ -205,7 +233,11 @@ cfg_set() {
   fi
   printf '%s=%s\n' "$_cs_key" "$_cs_val" >>"$CONFIG_FILE" 2>/dev/null || true
   if command -v ksud >/dev/null 2>&1; then
-    ksud module config set "$_cs_key" "$_cs_val" >/dev/null 2>&1 || true
+    ksud module config --internal "$MODULE_ID" set "$_cs_key" "$_cs_val" >/dev/null 2>&1 || true
+  fi
+  if [ -n "${CFG_CACHE:-}" ] && [ -f "$CFG_CACHE" ]; then
+    sed -i "/^${_cs_key}=/d" "$CFG_CACHE" 2>/dev/null || true
+    printf '%s=%s\n' "$_cs_key" "$_cs_val" >>"$CFG_CACHE" 2>/dev/null || true
   fi
 }
 
@@ -252,14 +284,13 @@ adbd_running() {
   [ "$(adb_getprop init.svc.adbd)" = "running" ]
 }
 
-adbd_pid_valid() {
-  [ -n "$1" ] || return 1
-  if [ -r "$PROC_ROOT/$1/comm" ] && [ "$(cat "$PROC_ROOT/$1/comm" 2>/dev/null)" = "adbd" ]; then
-    return 0
-  fi
-  for _apv in $(adbd_pids); do
-    [ "$_apv" = "$1" ] && return 0
-  done
+inode_in_pid_fds() {
+  _iip_pid=$1
+  [ -d "$PROC_ROOT/$_iip_pid/fd" ] || return 1
+  _iip_list=$(ls -l "$PROC_ROOT/$_iip_pid/fd" 2>/dev/null)
+  case "$_iip_list" in
+    *"socket:[$2]"*) return 0 ;;
+  esac
   return 1
 }
 
@@ -277,15 +308,42 @@ pid_for_inode() {
   return 1
 }
 
+# Fast owner lookup for the rare "port is busy" path. `ss -p` is available on
+# modern Android; fall back to scanning /proc fds when it is not.
+owner_pid_for_port() {
+  _opp_port=$1
+  if command -v ss >/dev/null 2>&1; then
+    _opp_pid=$(ss -tlnp 2>/dev/null | awk -v port="$_opp_port" '
+      NR > 1 {
+        n = split($4, a, ":")
+        if (a[n] == port && match($0, /pid=[0-9]+/)) {
+          print substr($0, RSTART + 4, RLENGTH - 4)
+          exit
+        }
+      }
+    ')
+    [ -n "$_opp_pid" ] && {
+      printf '%s\n' "$_opp_pid"
+      return 0
+    }
+  fi
+  return 1
+}
+
 # scan_listeners PORT
 # Populates L_FOUND, L_ADBD, L_UID, L_PID, L_INODE for LISTEN sockets on PORT.
+# adbd's own fds are checked first, which keeps `status` fast on busy devices.
+# Set SCAN_OWNER_PID=1 to resolve the pid of a non-adbd listener.
 scan_listeners() {
-  _sl_hex=$(port_hex "$1")
+  _sl_port=$1
+  _sl_hex=$(port_hex "$_sl_port")
   L_FOUND=0
   L_ADBD=0
   L_UID=-1
   L_PID=-1
   L_INODE=''
+  _sl_all=''
+
   for _sl_file in "$PROC_ROOT/net/tcp" "$PROC_ROOT/net/tcp6"; do
     [ -r "$_sl_file" ] || continue
     _sl_entries=$(awk -v ph="$_sl_hex" '
@@ -295,29 +353,38 @@ scan_listeners() {
       }
     ' "$_sl_file" 2>/dev/null)
     [ -n "$_sl_entries" ] || continue
-    while read -r _sl_ino _sl_uid; do
-      [ -n "$_sl_ino" ] || continue
-      L_FOUND=1
-      if [ "$L_UID" = "-1" ]; then
-        L_UID=$_sl_uid
-        L_INODE=$_sl_ino
-      fi
-      _sl_pid=$(pid_for_inode "$_sl_ino" 2>/dev/null)
-      [ -n "$_sl_pid" ] || _sl_pid=''
-      if [ -n "$_sl_pid" ] && adbd_pid_valid "$_sl_pid"; then
+    _sl_all="${_sl_all}${_sl_entries}
+"
+  done
+
+  [ -n "$_sl_all" ] || return 0
+  L_FOUND=1
+  _sl_pids=$(adbd_pids)
+
+  while read -r _sl_ino _sl_uid; do
+    [ -n "$_sl_ino" ] || continue
+    if [ "$L_UID" = "-1" ]; then
+      L_UID=$_sl_uid
+      L_INODE=$_sl_ino
+    fi
+    for _sl_pid in $_sl_pids; do
+      if inode_in_pid_fds "$_sl_pid" "$_sl_ino"; then
         L_ADBD=1
         L_UID=$_sl_uid
         L_PID=$_sl_pid
         L_INODE=$_sl_ino
-      elif [ "$L_PID" = "-1" ] && [ -n "$_sl_pid" ]; then
-        L_PID=$_sl_pid
+        break 2
       fi
-    done <<EOF
-$_sl_entries
+    done
+  done <<EOF
+$_sl_all
 EOF
-  done
-  if [ "$L_FOUND" = 1 ] && [ "$L_PID" = "-1" ] && [ -n "$L_INODE" ]; then
-    L_PID=$(pid_for_inode "$L_INODE" 2>/dev/null)
+
+  if [ "$L_ADBD" = "0" ] && [ "${SCAN_OWNER_PID:-0}" = "1" ]; then
+    L_PID=$(owner_pid_for_port "$_sl_port" 2>/dev/null) || L_PID=''
+    if [ -z "$L_PID" ] && [ -n "$L_INODE" ]; then
+      L_PID=$(pid_for_inode "$L_INODE" 2>/dev/null) || L_PID=''
+    fi
     [ -n "$L_PID" ] || L_PID=-1
   fi
 }
@@ -371,6 +438,7 @@ ips_json() {
 # ---------------------------------------------------------------------------
 
 refresh_desc() {
+  cfg_init_cache
   command -v ksud >/dev/null 2>&1 || return 0
   _rd_port=${1:-$(adb_getprop service.adb.tcp.port)}
   _rd_lang=$(cfg_get language zh)
@@ -391,7 +459,7 @@ refresh_desc() {
     _rd_value=$_rd_state
   fi
   [ -n "$_rd_ip" ] && _rd_value="$_rd_value · $_rd_ip"
-  ksud module config set override.description "$_rd_value" >/dev/null 2>&1 || true
+  ksud module config --internal "$MODULE_ID" set override.description "$_rd_value" >/dev/null 2>&1 || true
 }
 
 # ---------------------------------------------------------------------------
@@ -399,6 +467,7 @@ refresh_desc() {
 # ---------------------------------------------------------------------------
 
 cmd_status() {
+  cfg_init_cache
   _st_la=$(adb_getprop service.adb.listen_addrs)
   _st_prop=$(adb_getprop service.adb.tcp.port)
   _st_boot=$(cfg_get enabled false)
@@ -455,6 +524,7 @@ cmd_status() {
 }
 
 cmd_enable() {
+  cfg_init_cache
   _en_port=''
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -478,7 +548,7 @@ cmd_enable() {
   [ -z "$_en_la" ] || fail 10 "listen_addrs already set"
 
   _en_cur=$(adb_getprop service.adb.tcp.port)
-  scan_listeners "$_en_port"
+  SCAN_OWNER_PID=1 scan_listeners "$_en_port"
   if [ "$_en_cur" = "$_en_port" ] && [ "$L_ADBD" = "1" ]; then
     _en_saved_port=$(state_get prev_port)
     _en_saved_adbe=$(state_get prev_adb_enabled)
@@ -555,6 +625,7 @@ cmd_enable() {
 }
 
 cmd_disable() {
+  cfg_init_cache
   is_root || fail 13 "root not granted"
   _di_old=$(adb_getprop service.adb.tcp.port)
   _di_adbe=$(get_adb_enabled)
@@ -607,6 +678,7 @@ cmd_set_port() {
 }
 
 cmd_boot() {
+  cfg_init_cache
   _bo_mode=${1:-}
   [ $# -gt 0 ] && shift
   case "$_bo_mode" in
@@ -640,6 +712,7 @@ cmd_boot() {
 }
 
 cmd_boot_apply() {
+  cfg_init_cache
   [ "$(cfg_get enabled false)" = "true" ] || return 0
   _ba_port=$(cfg_get port "$DEFAULT_PORT")
   _ba_retry=$(cfg_get retry 3)
@@ -662,6 +735,7 @@ cmd_boot_apply() {
 }
 
 cmd_doctor() {
+  cfg_init_cache
   _dr_root=false
   is_root && _dr_root=true
   _dr_la=$(adb_getprop service.adb.listen_addrs)
@@ -679,7 +753,7 @@ cmd_doctor() {
   _dr_pid=-1
   _dr_occupied=false
   if is_port "$_dr_prop" 2>/dev/null; then
-    scan_listeners "$_dr_prop"
+    SCAN_OWNER_PID=1 scan_listeners "$_dr_prop"
     if [ "$L_ADBD" = "1" ]; then
       _dr_listening=1
       _dr_uid=$L_UID
@@ -857,6 +931,7 @@ cmd_keys() {
 }
 
 cmd_config() {
+  cfg_init_cache
   _co_action=${1:-}
   if [ "$_co_action" = "set" ]; then
     _co_key=${2:-}

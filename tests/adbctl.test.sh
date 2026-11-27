@@ -89,6 +89,15 @@ else
 fi
 EOF
 
+  cat >"$FAKE_BIN/ksud" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >>"${FAKE_KSU_LOG:-/dev/null}"
+case "$*" in
+  *" get "*) exit 1 ;;
+  *) exit 0 ;;
+esac
+EOF
+
   chmod 755 "$FAKE_BIN"/*
 }
 
@@ -103,6 +112,8 @@ new_env() {
   export FAKE_SETTINGS="$SCEN/settings"
   export FAKE_PROC="$SCEN/proc"
   export FAKE_TEST_DIR="$SCEN"
+  export FAKE_KSU_LOG="$SCEN/ksud.log"
+  : >"$FAKE_KSU_LOG"
   export MYADB_WAIT_STEPS=3
   export MYADB_WAIT_INTERVAL=0
   unset MK_LISTENER
@@ -269,6 +280,25 @@ assert_contains "$out" '"language":"en"' "config dump includes language"
 out=$(sh "$ADBCTL" config set port 80)
 code=$?
 assert_equals "$code" "15" "config set rejects invalid port"
+
+# ---------------------------------------------------------------------------
+# 8b. KernelSU config calls must target the module with --internal
+# ---------------------------------------------------------------------------
+new_env ksu_internal
+: >"$FAKE_KSU_LOG"
+sh "$ADBCTL" config set language en >/dev/null
+if grep -q 'module config --internal myadb set language en' "$FAKE_KSU_LOG"; then
+  ok "config set targets KernelSU module config with --internal"
+else
+  bad "config set did not target KernelSU module config with --internal"
+fi
+: >"$FAKE_KSU_LOG"
+sh "$ADBCTL" refresh-desc >/dev/null
+if grep -q 'module config --internal myadb set override.description' "$FAKE_KSU_LOG"; then
+  ok "refresh-desc targets KernelSU module config with --internal"
+else
+  bad "refresh-desc did not target KernelSU module config with --internal"
+fi
 
 # ---------------------------------------------------------------------------
 # 9. keys: import / backup / clear

@@ -15,3 +15,6 @@
 - WebView 版本检测与低版本提示条。
 - 构建脚本、GitHub Actions（WebUI 检查、模块检查、发布打包）。
 - 文档：中文 / 英文 README、用户指南（中英）、设计方案、AGENTS.md、CLAUDE.md、变更记录。
+- 真机验证：Pixel 7 / Android 17 / KernelSU 3.2.5，验证状态、幂等、配置、密钥、诊断与 WebUI。
+- 性能：监听校验只扫描 adbd fd，占用者 pid 优先用 `ss -tlnp`；ksud 配置使用单次缓存，真机首屏数据加载约 2 秒。
+- 修复：KernelSU 3.2.5 的 `ksud module config` 需要 `--internal myadb`。

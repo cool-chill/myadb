@@ -22,13 +22,13 @@ EOF
 fi
 
 if command -v ksud >/dev/null 2>&1; then
-  ksud module config set port 5555 >/dev/null 2>&1 || true
-  ksud module config set enabled false >/dev/null 2>&1 || true
-  ksud module config set toggle_adb_enabled true >/dev/null 2>&1 || true
-  ksud module config set restore_adb_enabled true >/dev/null 2>&1 || true
-  ksud module config set retry 3 >/dev/null 2>&1 || true
-  ksud module config set retry_interval 10 >/dev/null 2>&1 || true
-  ksud module config set language zh >/dev/null 2>&1 || true
+  ksud module config --internal myadb set port 5555 >/dev/null 2>&1 || true
+  ksud module config --internal myadb set enabled false >/dev/null 2>&1 || true
+  ksud module config --internal myadb set toggle_adb_enabled true >/dev/null 2>&1 || true
+  ksud module config --internal myadb set restore_adb_enabled true >/dev/null 2>&1 || true
+  ksud module config --internal myadb set retry 3 >/dev/null 2>&1 || true
+  ksud module config --internal myadb set retry_interval 10 >/dev/null 2>&1 || true
+  ksud module config --internal myadb set language zh >/dev/null 2>&1 || true
 fi
 
 exit 0

@@ -47,7 +47,7 @@ function InfoRow({ label, value }: { label: string; value: ReactNode }) {
 }
 
 export function Home() {
-  const { t } = useI18n()
+  const { t, setLang } = useI18n()
   const [status, setStatus] = useState<Status | null>(null)
   const [config, setConfig] = useState<Config | null>(null)
   const [loading, setLoading] = useState(true)
@@ -66,6 +66,7 @@ export function Home() {
         const [nextStatus, nextConfig] = await Promise.all([fetchStatus(), fetchConfig()])
         setStatus(nextStatus)
         setConfig(nextConfig)
+        setLang(nextConfig.language)
         setPortInput(String(nextConfig.port))
       } catch {
         setError(t('error.status'))
@@ -73,7 +74,7 @@ export function Home() {
         if (spinner) setLoading(false)
       }
     },
-    [t],
+    [t, setLang],
   )
 
   useEffect(() => {

@@ -419,6 +419,7 @@ adbd 的端口通过属性设置，变更后必须重启 adbd 才会生效。开
 - [User Guide (English)](./docs/USER_GUIDE_EN.md)
 - [设计方案](./docs/design.md)
 - [变更记录](./docs/CHANGELOG.md)
+- [真机测试报告](./docs/TEST_REPORT.md)
 - [贡献者 / AI 接手说明](./AGENTS.md)
 - [Claude Code 说明](./CLAUDE.md)
 

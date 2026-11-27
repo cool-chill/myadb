@@ -63,14 +63,16 @@ export function Settings() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      setConfig(await fetchConfig())
+      const next = await fetchConfig()
+      setConfig(next)
+      setLang(next.language)
       setError(null)
     } catch {
       setError(t('error.status'))
     } finally {
       setLoading(false)
     }
-  }, [t])
+  }, [t, setLang])
 
   useEffect(() => {
     void load()

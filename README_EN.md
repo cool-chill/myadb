@@ -419,6 +419,7 @@ No. Upgrading replaces module files while `config.conf`, state, logs and backups
 - [用户指南（中文）](./docs/USER_GUIDE.md)
 - [Design document](./docs/design.md)
 - [Changelog](./docs/CHANGELOG.md)
+- [Real-device test report](./docs/TEST_REPORT.md)
 - [Contributor / AI takeover notes](./AGENTS.md)
 - [Claude Code notes](./CLAUDE.md)
 

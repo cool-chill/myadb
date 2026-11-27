@@ -4,13 +4,12 @@ import { Home as HomeIcon, Settings as SettingsIcon, Smartphone } from 'lucide-r
 import { Home } from '@/pages/Home'
 import { Settings } from '@/pages/Settings'
 import { useI18n } from '@/i18n'
-import { fetchConfig } from '@/lib/bridge'
 import { detectChromeVersion, MIN_CHROMIUM } from '@/lib/webview'
 
 type Tab = 'home' | 'settings'
 
 export default function App() {
-  const { t, setLang } = useI18n()
+  const { t } = useI18n()
   const [tab, setTab] = useState<Tab>('home')
   const [oldWebView, setOldWebView] = useState<string | null>(null)
 
@@ -20,14 +19,6 @@ export default function App() {
       setOldWebView(String(version))
     }
   }, [])
-
-  useEffect(() => {
-    fetchConfig()
-      .then((config) => setLang(config.language))
-      .catch(() => {
-        // The fallback language (zh) is already active.
-      })
-  }, [setLang])
 
   return (
     <div className="min-h-screen bg-background text-foreground">
