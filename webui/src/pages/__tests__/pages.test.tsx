@@ -30,6 +30,9 @@ describe('pages', () => {
     )
 
     expect(await screen.findByText('界面语言')).toBeInTheDocument()
+    expect(await screen.findByText('USB 与设备')).toBeInTheDocument()
+    expect(await screen.findByText('已授权设备')).toBeInTheDocument()
+    expect(await screen.findByText('desktop@example')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'English' })).toBeInTheDocument()
     expect(screen.getByText('GPL-3.0')).toBeInTheDocument()
   })

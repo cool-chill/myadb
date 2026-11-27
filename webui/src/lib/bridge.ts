@@ -3,13 +3,17 @@ import { exec, spawn, toast } from 'kernelsu'
 import {
   parseConfig,
   parseDoctor,
+  parseKeys,
   parseLog,
+  parseUsb,
   parseResult,
   parseStatus,
   type CommandResultBody,
   type Config,
   type Doctor,
+  type KeyEntry,
   type Status,
+  type UsbState,
 } from './schema'
 import { mockExec } from './mock'
 
@@ -135,8 +139,38 @@ export function setBoot(enabled: boolean, port?: number): Promise<Outcome> {
   return runOutcome(args)
 }
 
+export function syncNotifyDaemon(): Promise<Outcome> {
+  return runOutcome(['notify-daemon'])
+}
+
 export function setConfig(key: string, value: string | number | boolean): Promise<Outcome> {
   return runOutcome(['config', 'set', key, String(value)])
+}
+
+export async function fetchUsb(): Promise<UsbState> {
+  const raw = await runAdbctl(['usb', 'status'])
+  const usb = parseUsb(raw.stdout)
+  if (!usb) throw new Error('invalid usb payload')
+  return usb
+}
+
+export function setUsbSwitch(kind: 'adb' | 'developer', enabled: boolean): Promise<Outcome> {
+  return runOutcome(['usb', 'set', kind, enabled ? 'on' : 'off'])
+}
+
+export function setUsbMode(mode: 'charging' | 'mtp' | 'ptp' | 'rndis' | 'midi'): Promise<Outcome> {
+  return runOutcome(['usb', 'mode', mode])
+}
+
+export async function fetchKeys(): Promise<KeyEntry[]> {
+  const raw = await runAdbctl(['keys', 'list'])
+  const keys = parseKeys(raw.stdout)
+  if (!keys) throw new Error('invalid keys payload')
+  return keys
+}
+
+export function removeKey(id: string): Promise<Outcome> {
+  return runOutcome(['keys', 'remove', id])
 }
 
 export function keysAction(action: 'import' | 'backup' | 'restore' | 'clear', path?: string): Promise<Outcome> {

@@ -133,7 +133,10 @@ sh tests/adbctl.test.sh
 | `boot-apply` | 内部命令，开机时按 `retry`/`retry_interval` 调用 `enable` |
 | `doctor --json` | 环境诊断 |
 | `log -n N` | 最近日志 JSON 数组 |
-| `keys ...` | 密钥管理 |
+| `keys list` | 已授权设备列表（注释、MD5 指纹，不含密钥） |
+| `keys import\|backup\|restore\|remove <ID>\|clear` | 密钥与授权设备管理 |
+| `usb status\|set adb\|developer on\|off\|mode charging\|mtp\|ptp\|rndis\|midi` | USB 调试、开发者选项与 USB 模式 |
+| `notify` / `notify-daemon` / `notify-loop` | 即时状态通知、通知守护进程启动/停止、内部循环 |
 | `config ...` | 配置读写 |
 | `refresh-desc` | 更新 `ksud` 的 `override.description` |
 
@@ -144,7 +147,7 @@ sh tests/adbctl.test.sh
 - 默认值由 `cfg_default` 提供。
 - 读取顺序：`ksud module config`（存在时）→ `$MODDIR/config.conf` → 默认值。
 - 写入：同时写 `$MODDIR/config.conf` 与 `ksud module config`（存在时）。
-- 合法键：`port`、`enabled`、`toggle_adb_enabled`、`restore_adb_enabled`、`retry`、`retry_interval`、`language`。
+- 合法键：`port`、`enabled`、`toggle_adb_enabled`、`restore_adb_enabled`、`retry`、`retry_interval`、`language`、`notification`。
 
 运行期文件：
 
@@ -176,10 +179,10 @@ sh tests/adbctl.test.sh
 |---|---|
 | `customize.sh` | 设置 `bin/adbctl` 权限，初始化 `config.conf`，同步 KSU 配置；不自动开启端口 |
 | `post-fs-data.sh` | 只建目录与权限；不要动 adbd |
-| `service.sh` | 最多等 120 秒 `sys.boot_completed`，然后 `adbctl boot-apply` |
+| `service.sh` | 最多等 120 秒 `sys.boot_completed`，然后 `adbctl boot-apply` 与 `adbctl notify-daemon` |
 | `boot-completed.sh` | `status` + `refresh-desc` |
 | `action.sh` | 依次探测 KSU WebUI、MMRL，最后输出状态 JSON |
-| `uninstall.sh` | 关闭端口，删除日志/备份/state/config，不动系统 `adb_keys` |
+| `uninstall.sh` | 关闭端口，停止通知守护进程，删除日志/备份/state/config，不动系统 `adb_keys` |
 
 所有脚本使用 POSIX sh，必须通过 `shellcheck -s sh`。`MODDIR` 解析要有 `/data/adb/modules/myadb` 兜底。
 
@@ -193,6 +196,7 @@ sh tests/adbctl.test.sh
 - `schema.ts` 必须先校验 CLI 输出，解析失败不能让页面崩溃。
 - 所有操作完成后重新拉取 `status` 与 `config`，不做乐观更新。
 - 错误码通过 `errorRef` 映射到 `error.*` 文案。
+- 设置页包含已授权设备列表、USB 控制与常驻通知开关；删除授权会二次确认。
 - 低版本 WebView 提示条使用内联样式，不依赖 Tailwind。
 - 安全区使用 `env(safe-area-inset-*)`。
 
@@ -259,7 +263,7 @@ sh tests/adbctl.test.sh
 
 - `shellcheck -s sh` 必须零告警。
 - `tests/adbctl.test.sh` 使用临时目录伪造 `/proc`、`getprop`、`setprop`、`settings`、`ip`、`id`。
-- 覆盖：ACTIVE/IDLE/DEGRADED/BLOCKED、成功、幂等、端口占用、回滚、非法端口、配置、密钥、日志、doctor、adb_enabled 快照恢复。
+- 覆盖：ACTIVE/IDLE/DEGRADED/BLOCKED、成功、幂等、端口占用、回滚、非法端口、配置、密钥列表/删除、USB 状态与模式、通知、日志、doctor、adb_enabled 快照恢复。
 - 测试脚本不能依赖真实 Android 环境，也不能依赖宿主机 root。
 
 ### 8.2 WebUI
@@ -348,6 +352,10 @@ git push origin v1.0.0
 | log 滚动 | 单文件最多 200 行，避免无限增长 |
 | zip 权限 | 模块脚本应保持可执行位，打包后用 `unzip -Z` 检查 |
 | 旧 WebView | 提示条必须用内联样式，不能依赖 Tailwind |
+| Shell 通知点击 | Android 11+ 的 `cmd notification post` 由 shell 发布时无法创建点击 Intent（`getIntentSender need uid=1000`），因此通知只展示状态 |
+| 通知发布身份 | 必须通过 `su 2000 -c` 以 shell 身份发布；root 直接发布会失败 |
+| USB 模式切换 | 会重置 USB 接口，可能短暂断开 USB/ADB；失败时返回 15 |
+| 密钥文件换行 | 导入前必须确保已有文件以换行结尾，否则新行会拼接到上一条注释 |
 | 卸载 | 不删除系统 `adb_keys` |
 
 ## 12. 提交与分支

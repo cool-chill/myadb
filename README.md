@@ -36,6 +36,9 @@ MyADB 是一个 KernelSU / Magisk / APatch 模块，用于控制系统 adbd 的 
 - 失败回滚：变更前快照，adbd 启动失败时恢复原端口与 `adb_enabled`。
 - 幂等：端口未变且已确认监听时不重启 adbd。
 - 密钥管理：导入、备份、恢复、清除 `/data/misc/adb/adb_keys`，清除前自动备份。
+- 已授权设备管理：列出 ADB 公钥的注释与 MD5 指纹，可删除单条授权，不暴露密钥内容。
+- USB 管理：切换 USB 调试、开发者选项，以及仅充电 / MTP / PTP / RNDIS 模式。
+- 常驻通知：每 15 秒发布一条 ADB 状态通知，显示端口、监听结果与设备 IP。
 - 诊断与日志：`doctor` 输出环境信息，日志单文件滚动 200 行。
 - 中英双语 WebUI，默认中文，切换即时生效。
 
@@ -48,7 +51,7 @@ MyADB 是一个 KernelSU / Magisk / APatch 模块，用于控制系统 adbd 的 
 | WebUI | 需要管理器支持模块 `webroot`（KernelSU 管理器或 MMRL） |
 | 无 WebUI | `action.sh` 会输出状态 JSON，仍可完整使用命令行 |
 | WebView | 兼容基线 Chromium 111，更低版本显示提示条 |
-| 已验证 | Linux 伪 `/proc` 集成测试、WebUI mock 测试；真机矩阵待刷入验证 |
+| 已验证 | Pixel 7 / Android 17 / KernelSU 3.2.5；Android 11 / Magisk；Linux 伪 `/proc` 集成测试与 WebUI mock 测试 |
 
 ## 安装
 
@@ -95,7 +98,10 @@ adb devices
 |---|---|
 | 界面语言 | 中文 / English，写入 `language` 配置 |
 | 行为 | `toggle_adb_enabled`、`restore_adb_enabled` |
+| 已授权设备 | 列出公钥注释、MD5 指纹，可删除单条授权 |
 | ADB 密钥 | 导入、备份、恢复、清除；清除前自动备份 |
+| USB | USB 调试、开发者选项、仅充电 / MTP / PTP / RNDIS |
+| 常驻通知 | 每 15 秒更新 ADB 状态；点击无动作，WebUI 从管理器进入 |
 | 关于 | 版本、仓库地址、开源协议 |
 
 状态值含义：
@@ -121,7 +127,12 @@ adb devices
 | `adbctl boot on\|off [--port 6000]` | 配置开机自启 |
 | `adbctl doctor --json` | 环境诊断 |
 | `adbctl log -n 50` | 最近日志（JSON 数组） |
+| `adbctl keys list` | 列出已授权设备（注释与指纹，不含密钥内容） |
+| `adbctl keys remove <ID>` | 删除单条授权（自动备份） |
 | `adbctl keys import\|backup\|restore\|clear [PATH]` | 密钥管理 |
+| `adbctl usb status` | USB 调试、开发者选项与当前 USB 模式 |
+| `adbctl usb set adb\|developer on\|off` | 切换 USB 调试或开发者选项 |
+| `adbctl usb mode charging\|mtp\|ptp\|rndis\|midi` | 切换 USB 模式 |
 | `adbctl config [get KEY\|set KEY VALUE]` | 读取或修改配置 |
 
 常用示例：
@@ -193,6 +204,7 @@ CLI 只输出 JSON 与退出码，本地化文案由 WebUI 按错误码渲染。
 | `retry` | `3` | 开机失败重试次数 |
 | `retry_interval` | `10` | 重试间隔（秒） |
 | `language` | `zh` | `zh` / `en` |
+| `notification` | `true` | 是否运行常驻状态通知 |
 
 存储位置与优先级：
 
@@ -253,6 +265,8 @@ su -c '/data/adb/modules/myadb/bin/adbctl keys clear'
 | PC 无法连接 | 确认同一局域网、端口正确、路由器未隔离客户端；在电脑执行 `adb kill-server && adb start-server` |
 | MIUI / HyperOS / One UI | 属性可能延迟生效，开机后等待 30 秒并运行 `doctor` |
 | 开关后连接断开 | 端口变更会重启 adbd，这是预期行为 |
+| USB 模式切换后 ADB 断开 | USB 模式变更会重置 USB 接口，等待系统重新枚举后重连 |
+| 通知点击无反应 | Shell 通知在 Android 11+ 无法设置点击动作，请从管理器打开 WebUI |
 | 开机未自动开启 | 确认 `enabled=true`，并查看 log 中的 `boot-apply` 记录 |
 
 诊断命令：
@@ -387,6 +401,7 @@ myadb/
 ## 安全建议
 
 - 明文 ADB 端口会暴露设备调试能力，只在可信网络使用。
+- 常驻通知由 shell 发布，系统可能显示为「Shell」；它只展示状态，不包含点击跳转。
 - 建议修改为非默认端口，并避免在公共 Wi-Fi 下开启。
 - ADB 密钥等同于登录凭据，备份文件应妥善保管。
 - 本工具不提供反检测、隐藏、绕过风控能力，也不会修改 `/system` 或 SELinux 策略。

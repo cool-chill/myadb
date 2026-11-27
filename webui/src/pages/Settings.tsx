@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import { useCallback, useEffect, useState } from 'react'
-import { ExternalLink, Globe, Info, KeyRound, Loader2, Settings2 } from 'lucide-react'
+import { ExternalLink, Globe, Info, KeyRound, Loader2, RefreshCw, Settings2, Trash2, Usb, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import {
@@ -17,9 +17,20 @@ import { Switch } from '@/components/ui/switch'
 import { ErrorNotice } from '@/components/error-notice'
 import { useI18n } from '@/i18n'
 import { translate } from '@/i18n/translate'
-import { fetchConfig, keysAction, notify, setConfig as saveConfig } from '@/lib/bridge'
+import {
+  fetchConfig,
+  fetchKeys,
+  fetchUsb,
+  keysAction,
+  notify,
+  removeKey,
+  setConfig as saveConfig,
+  setUsbMode,
+  syncNotifyDaemon,
+  setUsbSwitch,
+} from '@/lib/bridge'
 import { errorRef } from '@/lib/errors'
-import type { Config, Language } from '@/lib/schema'
+import type { Config, KeyEntry, Language, UsbState } from '@/lib/schema'
 import { APP_VERSION, LICENSE_NAME, REPO_URL } from '@/lib/constants'
 
 type ToggleKey = 'toggle_adb_enabled' | 'restore_adb_enabled'
@@ -59,13 +70,22 @@ export function Settings() {
   const [notice, setNotice] = useState<string | null>(null)
   const [keysPath, setKeysPath] = useState('/sdcard/adb_keys')
   const [clearOpen, setClearOpen] = useState(false)
+  const [usb, setUsb] = useState<UsbState | null>(null)
+  const [authorizedKeys, setAuthorizedKeys] = useState<KeyEntry[]>([])
+  const [deleteTarget, setDeleteTarget] = useState<KeyEntry | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const next = await fetchConfig()
+      const [next, nextUsb, nextKeys] = await Promise.all([
+        fetchConfig(),
+        fetchUsb().catch(() => null),
+        fetchKeys().catch(() => [] as KeyEntry[]),
+      ])
       setConfig(next)
       setLang(next.language)
+      setUsb(nextUsb)
+      setAuthorizedKeys(nextKeys)
       setError(null)
     } catch {
       setError(t('error.status'))
@@ -86,6 +106,22 @@ export function Settings() {
     },
     [t],
   )
+
+  const refreshUsb = useCallback(async () => {
+    try {
+      setUsb(await fetchUsb())
+    } catch {
+      // keep the last known state; the next action will retry
+    }
+  }, [])
+
+  const refreshKeys = useCallback(async () => {
+    try {
+      setAuthorizedKeys(await fetchKeys())
+    } catch {
+      // keep the last known state; the next action will retry
+    }
+  }, [])
 
   async function handleToggle(key: ToggleKey, value: boolean) {
     setBusy(key)
@@ -128,6 +164,91 @@ export function Settings() {
     }
   }
 
+  async function handleNotification(value: boolean) {
+    setBusy('notification')
+    setError(null)
+    setNotice(null)
+    try {
+      const outcome = await saveConfig('notification', value)
+      if (outcome.code !== 0) {
+        report(outcome.code)
+      } else {
+        setConfig((prev) => (prev ? { ...prev, notification: value } : prev))
+        const daemon = await syncNotifyDaemon()
+        if (daemon.code !== 0) {
+          report(daemon.code)
+        } else {
+          setNotice(t('notification.saved'))
+        }
+      }
+    } catch {
+      setError(t('error.status'))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function handleUsbSwitch(kind: 'adb' | 'developer', value: boolean) {
+    setBusy(`usb-${kind}`)
+    setError(null)
+    setNotice(null)
+    try {
+      const outcome = await setUsbSwitch(kind, value)
+      if (outcome.code !== 0) {
+        report(outcome.code)
+      } else {
+        setNotice(t('usb.saved'))
+        await refreshUsb()
+      }
+    } catch {
+      setError(t('error.status'))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function handleUsbMode(mode: 'charging' | 'mtp' | 'ptp' | 'rndis' | 'midi') {
+    if (busy) return
+    setBusy(`usb-mode-${mode}`)
+    setError(null)
+    setNotice(null)
+    try {
+      const outcome = await setUsbMode(mode)
+      if (outcome.code !== 0) {
+        report(outcome.code)
+      } else {
+        setNotice(t('usb.saved'))
+        await refreshUsb()
+      }
+    } catch {
+      setError(t('error.status'))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function handleRemoveKey() {
+    if (!deleteTarget) return
+    setBusy('key-delete')
+    setError(null)
+    setNotice(null)
+    try {
+      const outcome = await removeKey(deleteTarget.id)
+      if (outcome.code !== 0) {
+        report(outcome.code)
+      } else {
+        setNotice(t('keys.deleted'))
+        notify(t('keys.done'))
+        await refreshKeys()
+      }
+    } catch {
+      setError(t('error.status'))
+    } finally {
+      setBusy(null)
+      setDeleteTarget(null)
+    }
+  }
+
   async function handleKeyAction(action: 'import' | 'backup' | 'restore' | 'clear') {
     setBusy(`keys-${action}`)
     setError(null)
@@ -148,6 +269,7 @@ export function Settings() {
       } else {
         setNotice(t('keys.clear', { path: body?.backup ?? '' }))
       }
+      await refreshKeys()
       notify(t('keys.done'))
     } catch {
       setError(t('error.status'))
@@ -227,6 +349,117 @@ export function Settings() {
             disabled={busy !== null || !config}
             onChange={(value) => void handleToggle('restore_adb_enabled', value)}
           />
+          <ToggleRow
+            id="notification"
+            title={t('settings.notification')}
+            description={t('settings.notificationDesc')}
+            checked={Boolean(config?.notification)}
+            disabled={busy !== null || !config}
+            onChange={(value) => void handleNotification(value)}
+          />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <Usb className="h-4 w-4 text-primary" />
+            <CardTitle>{t('usb.title')}</CardTitle>
+          </div>
+          <CardDescription>{t('usb.desc')}</CardDescription>
+        </CardHeader>
+        <CardContent className="pt-4">
+          <ToggleRow
+            id="usb-adb"
+            title={t('usb.adb')}
+            description={t('usb.adbDesc')}
+            checked={usb?.adb_enabled === 1}
+            disabled={busy !== null || !usb || usb.adb_enabled === -1}
+            onChange={(value) => void handleUsbSwitch('adb', value)}
+          />
+          <ToggleRow
+            id="usb-developer"
+            title={t('usb.developer')}
+            description={t('usb.developerDesc')}
+            checked={usb?.developer_enabled === 1}
+            disabled={busy !== null || !usb}
+            onChange={(value) => void handleUsbSwitch('developer', value)}
+          />
+          <div className="mt-3 border-t border-border pt-3">
+            <Label>{t('usb.mode')}</Label>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              {(['charging', 'mtp', 'ptp', 'rndis'] as const).map((mode) => (
+                <Button
+                  key={mode}
+                  variant={usb?.mode === mode ? 'default' : 'outline'}
+                  disabled={busy !== null || !usb?.supports_usb}
+                  onClick={() => void handleUsbMode(mode)}
+                >
+                  {busy === `usb-mode-${mode}` ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                  {t(`usb.mode.${mode}`)}
+                </Button>
+              ))}
+            </div>
+            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{t('usb.changeWarning')}</p>
+            {usb ? (
+              <p className="mt-2 text-xs text-muted-foreground">
+                {t('usb.functions')}: {usb.functions.length > 0 ? usb.functions.join(', ') : t('usb.none')}
+              </p>
+            ) : null}
+            {usb && !usb.supports_usb ? (
+              <p className="mt-1 text-xs text-destructive">{t('usb.unsupported')}</p>
+            ) : null}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Users className="h-4 w-4 text-primary" />
+              <CardTitle>{t('keys.devices')}</CardTitle>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={t('keys.refresh')}
+              disabled={busy !== null}
+              onClick={() => void refreshKeys()}
+            >
+              <RefreshCw className="h-4 w-4" />
+            </Button>
+          </div>
+          <CardDescription>{t('keys.devicesDesc')}</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-2 pt-4">
+          {authorizedKeys.length > 0 ? (
+            authorizedKeys.map((key) => (
+              <div
+                key={`${key.index}-${key.id}`}
+                className="flex items-center justify-between gap-3 border-t border-border py-2.5 first:border-t-0 first:pt-0 last:pb-0"
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">
+                    {key.comment || t('keys.unnamed')}
+                  </p>
+                  <p className="truncate font-mono text-[11px] text-muted-foreground">{key.id}</p>
+                  <p className="text-[11px] text-muted-foreground">{key.algorithm}</p>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label={t('keys.delete')}
+                  disabled={busy !== null}
+                  onClick={() => setDeleteTarget(key)}
+                >
+                  <Trash2 className="h-4 w-4 text-destructive" />
+                </Button>
+              </div>
+            ))
+          ) : (
+            <p className="text-sm text-muted-foreground">{t('keys.devicesEmpty')}</p>
+          )}
         </CardContent>
       </Card>
 
@@ -317,6 +550,41 @@ export function Settings() {
           <p className="pt-1 text-xs text-muted-foreground">{t('footer.powered')}</p>
         </CardContent>
       </Card>
+
+      <Dialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null)
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('keys.deleteTitle')}</DialogTitle>
+            <DialogDescription>
+              {t('keys.deleteDesc', {
+                comment: deleteTarget?.comment || t('keys.unnamed'),
+              })}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setDeleteTarget(null)}
+              disabled={busy !== null}
+            >
+              {t('common.cancel')}
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={busy !== null}
+              onClick={() => void handleRemoveKey()}
+            >
+              {busy === 'key-delete' ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {t('common.confirm')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={clearOpen} onOpenChange={setClearOpen}>
         <DialogContent>

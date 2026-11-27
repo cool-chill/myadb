@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import { describe, expect, it } from 'vitest'
-import { commandFor, isNativeBridge, runAdbctl, shellQuote } from '@/lib/bridge'
+import { commandFor, fetchKeys, fetchUsb, isNativeBridge, runAdbctl, shellQuote } from '@/lib/bridge'
 import { parseStatus } from '@/lib/schema'
 
 describe('bridge command construction', () => {
@@ -25,6 +25,16 @@ describe('mock bridge', () => {
     const raw = await runAdbctl(['status', '--json'])
     expect(raw.code).toBe(0)
     expect(parseStatus(raw.stdout)).not.toBeNull()
+  })
+
+  it('returns usb status and authorized keys from the mock', async () => {
+    const usb = await fetchUsb()
+    expect(usb.supports_usb).toBe(true)
+    expect(usb.mode).toBe('mtp')
+    const keys = await fetchKeys()
+    expect(keys.length).toBeGreaterThan(0)
+    expect(keys[0]).toHaveProperty('id')
+    expect(keys[0]).not.toHaveProperty('key')
   })
 
   it('rejects an out-of-range port', async () => {

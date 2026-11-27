@@ -155,7 +155,10 @@ CLI 约定：
 | `adbctl boot` | `on\|off [--port N]` | 开机自启配置 |
 | `adbctl doctor` | `--json` | 环境诊断 |
 | `adbctl log` | `[-n N]` | 最近日志 |
-| `adbctl keys` | `import <path> \| backup <path> \| restore <path> \| clear` | 密钥管理 |
+| `adbctl keys` | `list \| import <path> \| backup <path> \| restore <path> \| remove <ID> \| clear` | 密钥与授权设备管理 |
+| `adbctl usb` | `status \| set adb\|developer on\|off \| mode charging\|mtp\|ptp\|rndis\|midi` | USB 调试、开发者选项与 USB 模式 |
+| `adbctl notify` | 无 | 立即发布一条状态通知 |
+| `adbctl notify-daemon` | 无 | 启动或停止通知守护进程 |
 | `adbctl config` | `[get KEY \| set KEY VALUE]` | 配置读写 |
 | `adbctl boot-apply` | 无 | 内部命令，供 `service.sh` 使用 |
 | `adbctl refresh-desc` | 无 | 内部命令，刷新管理器描述 |
@@ -259,6 +262,7 @@ su -c '/data/adb/modules/myadb/bin/adbctl status --json'
 | `retry` | `3` | `1–10` | 开机失败重试次数 |
 | `retry_interval` | `10` | `1–120` | 重试间隔（秒） |
 | `language` | `zh` | `zh` / `en` | WebUI 语言 |
+| `notification` | `true` | `true` / `false` | 是否运行常驻通知守护进程 |
 
 ### 8.2 存储与优先级
 
@@ -286,6 +290,7 @@ su -c '/data/adb/modules/myadb/bin/adbctl config'
 | `state` | `state`、`port`、`prev_port`、`prev_adb_enabled`、`timestamp` |
 | `log/adbctl.log` | 时间戳 + 操作 + 结果，滚动 200 行 |
 | `backup/` | 密钥清除或显式备份的输出目录 |
+| `run/notify.pid` | 常驻通知守护进程 PID；不存在表示未运行 |
 
 日志示例：
 
@@ -329,7 +334,78 @@ su -c '/data/adb/modules/myadb/bin/adbctl keys clear'
 
 清除前会复制到 `/data/adb/modules/myadb/backup/adb_keys.<timestamp>`，权限 `600`。
 
-## 10. 诊断与日志
+## 10. 设备授权、USB 与通知
+
+### 10.1 已授权设备
+
+WebUI「设置」页的「已授权设备」会列出 `/data/misc/adb/adb_keys` 中的公钥条目：
+
+- 显示注释（例如 `desktop@example`）、MD5 指纹与算法。
+- 不显示密钥内容。
+- 删除单条授权时会自动备份到模块 `backup/` 目录。
+- 删除当前电脑的授权后，该电脑下次连接需要重新确认。
+
+命令行：
+
+```bash
+# 列出已授权设备（注释、指纹，不含密钥）
+su -c '/data/adb/modules/myadb/bin/adbctl keys list'
+
+# 按指纹删除一条授权
+su -c '/data/adb/modules/myadb/bin/adbctl keys remove AA:BB:CC:...'
+```
+
+### 10.2 USB 管理
+
+WebUI「设置」页的「USB 与设备」提供：
+
+- USB 调试开关（`adb_enabled`）。
+- 开发者选项开关（`development_settings_enabled`）。
+- USB 模式：仅充电、文件传输（MTP）、照片传输（PTP）、USB 网络共享（RNDIS）。
+
+命令行：
+
+```bash
+# 查看 USB 状态
+su -c '/data/adb/modules/myadb/bin/adbctl usb status'
+
+# 打开开发者选项
+su -c '/data/adb/modules/myadb/bin/adbctl usb set developer on'
+
+# 切换为文件传输
+su -c '/data/adb/modules/myadb/bin/adbctl usb mode mtp'
+```
+
+切换 USB 模式会重置 USB 接口，可能短暂断开 USB/ADB；等待系统重新枚举后重连。关闭 USB 调试也会断开当前 ADB 连接。
+
+### 10.3 常驻通知
+
+模块会在开机后启动一个 shell 守护进程，每 15 秒发布一条 ADB 状态通知：
+
+- 标题与文本随状态、语言变化。
+- 显示端口、监听结果与设备 IP。
+- 通知由 shell 发布，系统可能显示为「Shell」。
+- Android 11+ 的 shell 通知无法设置点击动作，点击不会跳转；WebUI 仍从管理器进入。
+- 被手动划掉后，下一次刷新会重新出现。
+- 关闭通知只会停止刷新，已经显示的通知需要手动划掉。
+
+关闭方式：WebUI「设置」→「行为」→ 关闭「常驻通知」，或：
+
+```bash
+# 关闭通知并停止守护进程
+su -c '/data/adb/modules/myadb/bin/adbctl config set notification false'
+su -c '/data/adb/modules/myadb/bin/adbctl notify-daemon'
+```
+
+开启：
+
+```bash
+# 开启通知并启动守护进程
+su -c '/data/adb/modules/myadb/bin/adbctl config set notification true'
+su -c '/data/adb/modules/myadb/bin/adbctl notify-daemon'
+```
+
+## 11. 诊断与日志
 
 ```bash
 # 环境与占用诊断
@@ -362,7 +438,7 @@ su -c '/data/adb/modules/myadb/bin/adbctl log -n 50'
 3. 设备型号、Android 版本、root 方案与管理器版本。
 4. 复现步骤与期望结果。
 
-## 11. 故障排查
+## 12. 故障排查
 
 按以下顺序检查：
 
@@ -373,6 +449,12 @@ su -c '/data/adb/modules/myadb/bin/adbctl log -n 50'
 5. **adbd 是否启动**：查看 `adbd_running` 与日志中的 `adbd failed to start`。
 6. **网络是否可达**：同一局域网、无客户端隔离、防火墙放行。
 7. **WebView 是否过旧**：查看页面顶部提示条。
+
+USB 与通知相关问题：
+
+- USB 模式切换后 ADB 断开：等待 USB 重新枚举，必要时重新插拔或重启。
+- 通知点击无反应：这是 Android 11+ shell 通知的限制；请从管理器打开 WebUI。
+- 通知不更新：确认 `notification=true`，并执行 `adbctl notify-daemon` 检查 `run/notify.pid`。
 
 常见修复：
 
@@ -388,7 +470,7 @@ su -c '/data/adb/modules/myadb/bin/adbctl enable --port 5555'
 getprop service.adb.tcp.port
 ```
 
-## 12. 升级、卸载与恢复
+## 13. 升级、卸载与恢复
 
 ### 12.1 升级
 
@@ -414,7 +496,7 @@ setprop service.adb.tcp.port -1
 setprop ctl.restart adbd
 ```
 
-## 13. 安全建议
+## 14. 安全建议
 
 - 明文 ADB 端口等同于远程调试入口，只在可信网络开启。
 - 使用非默认端口，降低被扫描概率。
@@ -422,7 +504,7 @@ setprop ctl.restart adbd
 - 不要在公共 Wi-Fi 下长期开启。
 - 本工具不会绕过系统安全策略；遇到 `listen_addrs` 接管时按设计停止。
 
-## 14. FAQ
+## 15. FAQ
 
 **Q：开启后电脑仍显示 offline？**
 
@@ -444,7 +526,7 @@ adbd 需要重启才能读取新端口，这是 Android 的行为。
 
 使用命令行或 `action.sh`，功能完整可用。
 
-## 15. 从源码构建与验证
+## 16. 从源码构建与验证
 
 ```bash
 # 一键构建并打包
@@ -463,7 +545,7 @@ npm test
 
 构建产物：`dist/myadb-v1.0.0.zip`。
 
-## 16. 参考
+## 17. 参考
 
 - [README](../README.md)
 - [设计方案](./design.md)

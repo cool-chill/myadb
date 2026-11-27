@@ -3,11 +3,27 @@
 // was opened outside a manager WebView.
 import type { Config, Doctor, Status } from './schema'
 
+interface MockKey {
+  id: string
+  comment: string
+  algorithm: string
+}
+
+interface MockUsb {
+  adbEnabled: number
+  developerEnabled: number
+  functions: string[]
+  mode: string
+  supportsUsb: boolean
+}
+
 interface MockState {
   port: number
   listening: boolean
   adbEnabled: number
   config: Config
+  usb: MockUsb
+  keys: MockKey[]
   logs: string[]
 }
 
@@ -24,10 +40,30 @@ function defaultState(): MockState {
       enabled: true,
       toggle_adb_enabled: true,
       restore_adb_enabled: true,
+      notification: true,
       retry: 3,
       retry_interval: 10,
       language: 'zh',
     },
+    usb: {
+      adbEnabled: 1,
+      developerEnabled: 0,
+      functions: ['mtp', 'adb'],
+      mode: 'mtp',
+      supportsUsb: true,
+    },
+    keys: [
+      {
+        id: 'AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99',
+        comment: 'desktop@example',
+        algorithm: 'ADB',
+      },
+      {
+        id: '11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00',
+        comment: 'laptop@example',
+        algorithm: 'RSA',
+      },
+    ],
     logs: [
       `${stamp()} boot-apply port=5555 result=ok attempt=1`,
       `${stamp()} enable port=5555 result=ok cost=312ms`,
@@ -47,7 +83,14 @@ function loadState(): MockState {
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<MockState>
       if (parsed && parsed.config && typeof parsed.port === 'number') {
-        return { ...defaultState(), ...parsed, config: { ...defaultState().config, ...parsed.config } }
+        const base = defaultState()
+        return {
+          ...base,
+          ...parsed,
+          config: { ...base.config, ...parsed.config },
+          usb: { ...base.usb, ...parsed.usb },
+          keys: Array.isArray(parsed.keys) ? parsed.keys : base.keys,
+        }
       }
     }
   } catch {
@@ -137,8 +180,8 @@ function doctorOf(s: MockState): Doctor {
     listener_uid: active ? 0 : -1,
     listener_pid: active ? 4242 : -1,
     port_occupied: false,
-    keys_exists: true,
-    keys_count: 2,
+    keys_exists: s.keys.length > 0,
+    keys_count: s.keys.length,
     ips: ['192.168.1.42', '10.0.0.7'],
     warnings: [],
     timestamp: Math.floor(Date.now() / 1000),
@@ -220,8 +263,67 @@ export async function mockExec(args: string[]): Promise<{ code: number; stdout: 
       return ok({ lines })
     }
 
+    case 'usb': {
+      const action = rest[0]
+      if (action === 'status') {
+        return ok({
+          schema: 1,
+          supports_usb: state.usb.supportsUsb,
+          adb_enabled: state.usb.adbEnabled,
+          developer_enabled: state.usb.developerEnabled,
+          functions: state.usb.functions,
+          mode: state.usb.mode,
+        })
+      }
+      if (action === 'set') {
+        const key = rest[1]
+        const enabled = rest[2] === 'on' || rest[2] === 'true' || rest[2] === '1'
+        if (key === 'adb') {
+          state.usb.adbEnabled = enabled ? 1 : 0
+          state.adbEnabled = state.usb.adbEnabled
+        } else if (key === 'developer') {
+          state.usb.developerEnabled = enabled ? 1 : 0
+        } else {
+          return err(15, 'unknown usb setting')
+        }
+        addLog(`usb set ${key}=${enabled ? 1 : 0}`)
+        persist()
+        return ok({ ok: true, error_code: 0, key, value: enabled ? 1 : 0 })
+      }
+      if (action === 'mode') {
+        const mode = rest[1]
+        if (!['charging', 'mtp', 'ptp', 'rndis', 'midi'].includes(mode)) {
+          return err(15, 'invalid usb mode')
+        }
+        const functions = mode === 'charging' ? [] : [mode, ...(state.usb.adbEnabled === 1 ? ['adb'] : [])]
+        state.usb.mode = mode
+        state.usb.functions = functions
+        addLog(`usb mode=${mode} functions=${functions.join(',')}`)
+        persist()
+        return ok({ ok: true, error_code: 0, mode, functions })
+      }
+      return err(15, 'usb requires status|set|mode')
+    }
+
     case 'keys': {
       const action = rest[0]
+      if (action === 'list') {
+        return ok({ ok: true, keys: state.keys.map((key, index) => ({ index: index + 1, ...key })) })
+      }
+      if (action === 'remove') {
+        const id = rest[1]
+        const index = state.keys.findIndex((key) => key.id === id)
+        if (index < 0) return err(15, 'key not found')
+        state.keys.splice(index, 1)
+        addLog(`keys remove id=${id}`)
+        persist()
+        return ok({
+          ok: true,
+          error_code: 0,
+          removed: 1,
+          backup: '/data/adb/modules/myadb/backup/adb_keys.mock',
+        })
+      }
       if (action === 'backup') {
         const path = rest[1] || '/data/adb/modules/myadb/backup/adb_keys'
         addLog(`keys backup path=${path}`)
@@ -229,14 +331,31 @@ export async function mockExec(args: string[]): Promise<{ code: number; stdout: 
         return ok({ ok: true, error_code: 0, path })
       }
       if (action === 'clear') {
+        state.keys = []
         addLog('keys clear backup=/data/adb/modules/myadb/backup/adb_keys.mock')
         persist()
         return ok({ ok: true, error_code: 0, backup: '/data/adb/modules/myadb/backup/adb_keys.mock' })
       }
+      if (action === 'import') {
+        state.keys.push({
+          id: `MOCK-IMPORTED-${state.keys.length + 1}`,
+          comment: 'imported@host',
+          algorithm: 'ADB',
+        })
+        addLog('keys import added=1 skipped=0 invalid=0')
+        persist()
+        return ok({ ok: true, error_code: 0, added: 1, skipped: 0, invalid: 0 })
+      }
       addLog(`keys ${action}`)
       persist()
-      return ok({ ok: true, error_code: 0, added: action === 'import' ? 1 : undefined })
+      return ok({ ok: true, error_code: 0 })
     }
+
+    case 'notify':
+      return ok({ ok: true, error_code: 0 })
+
+    case 'notify-daemon':
+      return ok({ ok: true, enabled: state.config.notification })
 
     default:
       return err(15, `unknown command: ${command ?? ''}`)

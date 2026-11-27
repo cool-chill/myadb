@@ -30,6 +30,7 @@ export const configSchema = z.object({
   enabled: z.boolean(),
   toggle_adb_enabled: z.boolean(),
   restore_adb_enabled: z.boolean(),
+  notification: z.boolean(),
   retry: z.number().int(),
   retry_interval: z.number().int(),
   language: languageSchema,
@@ -61,6 +62,29 @@ export const doctorSchema = z
   })
   .passthrough()
 export type Doctor = z.infer<typeof doctorSchema>
+
+export const usbSchema = z.object({
+  schema: z.number().int(),
+  supports_usb: z.boolean(),
+  adb_enabled: z.number().int(),
+  developer_enabled: z.number().int(),
+  functions: z.array(z.string()),
+  mode: z.enum(['mtp', 'ptp', 'rndis', 'midi', 'charging', 'unknown']),
+})
+export type UsbState = z.infer<typeof usbSchema>
+
+export const keyEntrySchema = z.object({
+  index: z.number().int(),
+  id: z.string(),
+  comment: z.string(),
+  algorithm: z.string(),
+})
+export type KeyEntry = z.infer<typeof keyEntrySchema>
+
+export const keysListSchema = z.object({
+  ok: z.boolean(),
+  keys: z.array(keyEntrySchema),
+})
 
 export const logSchema = z.object({
   lines: z.array(z.string()),
@@ -102,6 +126,16 @@ export function parseConfig(raw: string): Config | null {
 export function parseDoctor(raw: string): Doctor | null {
   const result = doctorSchema.safeParse(parseJson(raw))
   return result.success ? result.data : null
+}
+
+export function parseUsb(raw: string): UsbState | null {
+  const result = usbSchema.safeParse(parseJson(raw))
+  return result.success ? result.data : null
+}
+
+export function parseKeys(raw: string): KeyEntry[] | null {
+  const result = keysListSchema.safeParse(parseJson(raw))
+  return result.success ? result.data.keys : null
 }
 
 export function parseLog(raw: string): LogResult | null {

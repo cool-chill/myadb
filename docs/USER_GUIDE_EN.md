@@ -155,7 +155,10 @@ CLI conventions:
 | `adbctl boot` | `on\|off [--port N]` | Start-on-boot config |
 | `adbctl doctor` | `--json` | Environment diagnostics |
 | `adbctl log` | `[-n N]` | Recent logs |
-| `adbctl keys` | `import <path> \| backup <path> \| restore <path> \| clear` | Key management |
+| `adbctl keys` | `list \| import <path> \| backup <path> \| restore <path> \| remove <ID> \| clear` | Keys and authorized devices |
+| `adbctl usb` | `status \| set adb\|developer on\|off \| mode charging\|mtp\|ptp\|rndis\|midi` | USB debugging, developer options and USB mode |
+| `adbctl notify` | none | Publish one status notification now |
+| `adbctl notify-daemon` | none | Start or stop the notification daemon |
 | `adbctl config` | `[get KEY \| set KEY VALUE]` | Read or write config |
 | `adbctl boot-apply` | none | Internal command used by `service.sh` |
 | `adbctl refresh-desc` | none | Internal command to refresh the manager description |
@@ -259,6 +262,7 @@ su -c '/data/adb/modules/myadb/bin/adbctl status --json'
 | `retry` | `3` | `1–10` | Boot retry count |
 | `retry_interval` | `10` | `1–120` | Retry interval (seconds) |
 | `language` | `zh` | `zh` / `en` | WebUI language |
+| `notification` | `true` | `true` / `false` | Run the ongoing notification daemon |
 
 ### 8.2 Storage and precedence
 
@@ -286,6 +290,7 @@ su -c '/data/adb/modules/myadb/bin/adbctl config'
 | `state` | `state`, `port`, `prev_port`, `prev_adb_enabled`, `timestamp` |
 | `log/adbctl.log` | Timestamp + operation + result, rolling 200 lines |
 | `backup/` | Output directory for key backups |
+| `run/notify.pid` | Notification daemon PID; absent when it is not running |
 
 Log example:
 
@@ -329,7 +334,78 @@ su -c '/data/adb/modules/myadb/bin/adbctl keys clear'
 
 Before clearing, the file is copied to `/data/adb/modules/myadb/backup/adb_keys.<timestamp>` with mode `600`.
 
-## 10. Diagnostics and logs
+## 10. Device authorization, USB and notifications
+
+### 10.1 Authorized devices
+
+The **Authorized devices** card on the WebUI Settings page lists entries from `/data/misc/adb/adb_keys`:
+
+- Shows the comment (for example `desktop@example`), MD5 fingerprint and algorithm.
+- Never shows key material.
+- Deleting one authorization creates an automatic backup under the module `backup/` directory.
+- Deleting the current computer's key requires that computer to authorize again.
+
+CLI:
+
+```bash
+# List authorized devices (comments and fingerprints, no key material)
+su -c '/data/adb/modules/myadb/bin/adbctl keys list'
+
+# Remove one authorization by fingerprint
+su -c '/data/adb/modules/myadb/bin/adbctl keys remove AA:BB:CC:...'
+```
+
+### 10.2 USB control
+
+The **USB and device** card on the Settings page provides:
+
+- USB debugging switch (`adb_enabled`).
+- Developer options switch (`development_settings_enabled`).
+- USB modes: charging, file transfer (MTP), photo transfer (PTP), USB tethering (RNDIS).
+
+CLI:
+
+```bash
+# Show USB state
+su -c '/data/adb/modules/myadb/bin/adbctl usb status'
+
+# Enable developer options
+su -c '/data/adb/modules/myadb/bin/adbctl usb set developer on'
+
+# Switch to file transfer
+su -c '/data/adb/modules/myadb/bin/adbctl usb mode mtp'
+```
+
+Changing the USB mode resets the USB interface and may briefly drop USB/ADB; reconnect after enumeration. Turning off USB debugging also drops the current ADB connection.
+
+### 10.3 Ongoing notification
+
+After boot the module starts a shell daemon that publishes an ADB status notification every 15 seconds:
+
+- Title and text follow the state and language.
+- Shows the port, listener result and device IP.
+- The notification is posted by shell, so the system may label it as "Shell".
+- Shell notifications cannot set a click action on Android 11+; tapping does not navigate. Open the WebUI from the manager.
+- If you swipe it away, the next refresh brings it back.
+- Disabling only stops refreshes; an existing notification must be swiped away manually.
+
+Disable it in WebUI Settings -> Behavior -> Ongoing notification, or:
+
+```bash
+# Disable the notification and stop the daemon
+su -c '/data/adb/modules/myadb/bin/adbctl config set notification false'
+su -c '/data/adb/modules/myadb/bin/adbctl notify-daemon'
+```
+
+Enable:
+
+```bash
+# Enable the notification and start the daemon
+su -c '/data/adb/modules/myadb/bin/adbctl config set notification true'
+su -c '/data/adb/modules/myadb/bin/adbctl notify-daemon'
+```
+
+## 11. Diagnostics and logs
 
 ```bash
 # Environment and occupancy diagnostics
@@ -362,7 +438,7 @@ When reporting a problem, include:
 3. Device model, Android version, root solution and manager version.
 4. Reproduction steps and expected behavior.
 
-## 11. Troubleshooting
+## 12. Troubleshooting
 
 Check in this order:
 
@@ -373,6 +449,12 @@ Check in this order:
 5. **adbd**: inspect `adbd_running` and `adbd failed to start` in the log.
 6. **Network**: same LAN, no client isolation, firewall allows the port.
 7. **WebView**: check the banner at the top of the page.
+
+USB and notification issues:
+
+- ADB drops after a USB mode change: wait for USB re-enumeration, replug or reboot if needed.
+- Notification tap does nothing: this is an Android 11+ shell notification limitation; open the WebUI from the manager.
+- Notification is not updating: confirm `notification=true` and run `adbctl notify-daemon`, then check `run/notify.pid`.
 
 Common fixes:
 
@@ -388,7 +470,7 @@ su -c '/data/adb/modules/myadb/bin/adbctl enable --port 5555'
 getprop service.adb.tcp.port
 ```
 
-## 12. Upgrade, uninstall and recovery
+## 13. Upgrade, uninstall and recovery
 
 ### 12.1 Upgrade
 
@@ -414,7 +496,7 @@ setprop service.adb.tcp.port -1
 setprop ctl.restart adbd
 ```
 
-## 13. Security
+## 14. Security
 
 - A plaintext ADB port is a remote debugging entry point; enable it only on trusted networks.
 - Use a non-default port to reduce scanning.
@@ -422,7 +504,7 @@ setprop ctl.restart adbd
 - Avoid leaving it enabled on public Wi-Fi.
 - The tool never bypasses system security policy; when `listen_addrs` takes over, it stops by design.
 
-## 14. FAQ
+## 15. FAQ
 
 **Q: The PC still shows offline after enabling.**
 
@@ -444,7 +526,7 @@ The port property is set, but no adbd listener was verified through `/proc` and 
 
 Use the CLI or `action.sh`; every feature is available.
 
-## 15. Build and verify from source
+## 16. Build and verify from source
 
 ```bash
 # Build and package in one command
@@ -463,7 +545,7 @@ npm test
 
 Build artifact: `dist/myadb-v1.0.0.zip`.
 
-## 16. References
+## 17. References
 
 - [README](../README_EN.md)
 - [Design document](./design.md)

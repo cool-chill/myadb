@@ -4,9 +4,11 @@ import {
   isValidPort,
   parseConfig,
   parseDoctor,
+  parseKeys,
   parseLog,
   parseResult,
   parseStatus,
+  parseUsb,
 } from '@/lib/schema'
 
 const status = {
@@ -45,6 +47,7 @@ describe('config schema', () => {
       enabled: false,
       toggle_adb_enabled: true,
       restore_adb_enabled: true,
+      notification: true,
       retry: 3,
       retry_interval: 10,
       language: 'zh',
@@ -61,6 +64,7 @@ describe('config schema', () => {
           enabled: false,
           toggle_adb_enabled: true,
           restore_adb_enabled: true,
+      notification: true,
           retry: 3,
           retry_interval: 10,
           language: 'fr',
@@ -108,6 +112,32 @@ describe('doctor and log payloads', () => {
       error_code: 11,
       uid: 1000,
     })
+  })
+})
+
+describe('usb and keys payloads', () => {
+  it('parses usb status', () => {
+    const usb = {
+      schema: 1,
+      supports_usb: true,
+      adb_enabled: 1,
+      developer_enabled: 0,
+      functions: ['mtp', 'adb'],
+      mode: 'mtp',
+    }
+    expect(parseUsb(JSON.stringify(usb))).toEqual(usb)
+    expect(parseUsb(JSON.stringify({ ...usb, mode: 'car' }))).toBeNull()
+  })
+
+  it('parses authorized key entries without key material', () => {
+    const payload = {
+      ok: true,
+      keys: [
+        { index: 1, id: 'AA:BB', comment: 'desktop@test', algorithm: 'ADB' },
+      ],
+    }
+    expect(parseKeys(JSON.stringify(payload))).toEqual(payload.keys)
+    expect(parseKeys(JSON.stringify({ ok: true, keys: [{ id: 1 }] }))).toBeNull()
   })
 })
 

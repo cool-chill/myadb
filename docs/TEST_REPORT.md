@@ -146,3 +146,72 @@ adb shell 'su -c "TIMEFORMAT=%R; time /data/adb/modules/myadb/bin/adbctl status 
 - 语言：中文。
 - 行为开关：`toggle_adb_enabled=true`、`restore_adb_enabled=true`。
 - `/data/misc/adb/adb_keys`：已恢复为测试前内容（sha256 `a9cca918dd4f87dd9851f8ee945d208f6162a3c74f6333af2f51ac8fe93dd2bf`）。
+
+## 9. 第二台真机（Magisk / Android 11）
+
+第二台测试设备通过同一 ADB 入口连接，代理后端已切换。
+
+### 9.1 环境
+
+| 项 | 值 |
+|---|---|
+| 设备 | Android SDK built for x86_64（模拟器） |
+| Android | 11（SDK 30） |
+| ABIs | x86_64 |
+| Root | Magisk |
+| 模块版本 | v1.0.0 |
+| ADB 形态 | 设备内 adbd 监听 5037（ADB server），代理转发到 27789 |
+| WebUI | 无 KernelSU/MMRL WebUI，使用 CLI 验证 |
+
+### 9.2 通过项
+
+| 项目 | 结果 |
+|---|---|
+| Magisk 安装模块 | 通过，先落到 `modules_update` |
+| 手动激活模块 | 通过 |
+| `status --json` | 通过，IDLE、端口 -1、adbd 运行、IP 列表正确 |
+| `doctor --json` | 通过，机型、Android 11、SELinux、密钥数量正确 |
+| `keys list` | 通过，显示注释与 MD5 指纹，不输出密钥 |
+| `keys import` | 通过，新增独立条目 |
+| `keys remove` | 通过，删除后与导入前 sha256 完全一致 |
+| `config get/set` | 通过 |
+| `usb status` | 通过，`functions=[]`、`mode=charging` |
+| `usb set developer on` | 通过，`developer_enabled=1` |
+| `usb set adb on` | 通过，`adb_enabled=1` |
+| `usb mode charging` | 通过，命令执行并重置 USB 接口，连接可恢复 |
+| `notify` | 通过，shell 通知显示“MyADB · 未开启 / 无线调试端口已关闭” |
+| `notify-daemon` | 通过，PID 文件、后台进程、15 秒刷新正常 |
+| 语言切换后通知刷新 | 通过，切换英文后通知更新为 “MyADB · Idle / Wireless ADB port is off” |
+| 关闭通知 | 通过，守护进程停止、PID 文件删除 |
+| `service.sh` 启动通知守护进程 | 通过 |
+
+### 9.3 发现并修复的问题
+
+| 问题 | 修复 |
+|---|---|
+| 已有 `adb_keys` 末尾没有换行时，导入的新 key 会拼接到上一条注释 | 导入前检测末字节并补换行；新增回归测试 |
+| 通知守护进程启动命令重复传入 `sh` | 修正为 `setsid sh <adbctl> notify-loop` |
+| 通知守护进程启动后不可见 | 增加 PID 文件检查与调试日志（`MYADB_NOTIFY_DEBUG`） |
+
+### 9.4 环境限制
+
+该 Android 11 模拟器内的 adbd 以 ADB server 形式监听 5037，不使用 `service.adb.tcp.port` 的标准 TCP 监听：
+
+- `enable --port 5555` 会设置属性并重启 adbd，但 `/proc` 中不会出现 5555 监听。
+- 等待时间延长到 8 秒仍失败，随后正确回滚到 `-1`。
+- 这属于测试环境限制；第一台 Pixel 7 / Android 17 / KernelSU 已确认 5555 标准监听与 `status` 校验正常。
+
+### 9.5 通知限制
+
+按用户选择，通知为 shell-only：
+
+- 状态与语言刷新正常。
+- Android 11+ 的 shell 通知无法设置点击 Intent，点击不会打开 WebUI。
+- 系统将通知来源显示为「Shell」。
+
+### 9.6 测试结束状态
+
+- 模块：已激活，`notification=true`，通知守护进程运行中。
+- 端口：-1（IDLE）；未启用 TCP 端口。
+- 语言：中文。
+- `/data/misc/adb/adb_keys`：导入/删除回归测试后与测试前内容一致。

@@ -65,9 +65,22 @@ EOF
   cat >"$FAKE_BIN/settings" <<'EOF'
 #!/bin/sh
 case "$1" in
-  get) cat "$FAKE_SETTINGS" 2>/dev/null ;;
-  put) printf '%s' "$4" >"$FAKE_SETTINGS" ;;
+  get) sed -n "s/^$3=//p" "$FAKE_SETTINGS" 2>/dev/null | tail -n 1 ;;
+  put)
+    sed -i "/^$3=/d" "$FAKE_SETTINGS" 2>/dev/null || true
+    printf '%s=%s\n' "$3" "$4" >>"$FAKE_SETTINGS"
+    ;;
 esac
+EOF
+
+  cat >"$FAKE_BIN/svc" <<'EOF'
+#!/bin/sh
+if [ "$1" = "usb" ]; then
+  case "$2" in
+    getFunctions) cat "$FAKE_USB_FUNCS" 2>/dev/null ;;
+    setFunctions) printf '%s' "${3:-}" >"$FAKE_USB_FUNCS" ;;
+  esac
+fi
 EOF
 
   cat >"$FAKE_BIN/ip" <<'EOF'
@@ -87,6 +100,23 @@ if [ "${1:-}" = "-u" ]; then
 else
   printf 'uid=0(root) gid=0(root)\n'
 fi
+EOF
+
+  cat >"$FAKE_BIN/cmd" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >>"${FAKE_CMD_LOG:-/dev/null}"
+EOF
+
+  cat >"$FAKE_BIN/su" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = "2000" ]; then
+  shift
+fi
+if [ "${1:-}" = "-c" ]; then
+  shift
+  exec sh -c "$*"
+fi
+exec "$@"
 EOF
 
   cat >"$FAKE_BIN/ksud" <<'EOF'
@@ -110,11 +140,15 @@ new_env() {
   export MYADB_BACKUP_DIR="$SCEN/mod/backup"
   export FAKE_PROPS="$SCEN/props"
   export FAKE_SETTINGS="$SCEN/settings"
+  export FAKE_USB_FUNCS="$SCEN/usb_funcs"
   export FAKE_PROC="$SCEN/proc"
   export FAKE_TEST_DIR="$SCEN"
   export FAKE_KSU_LOG="$SCEN/ksud.log"
   : >"$FAKE_KSU_LOG"
+  export FAKE_CMD_LOG="$SCEN/cmd.log"
+  : >"$FAKE_CMD_LOG"
   export MYADB_WAIT_STEPS=3
+  export MYADB_USB_SLEEP=0
   export MYADB_WAIT_INTERVAL=0
   unset MK_LISTENER
 
@@ -125,7 +159,8 @@ init.svc.adbd=running
 ro.product.model=Test Device
 ro.build.version.release=14
 EOF
-  printf '1' >"$FAKE_SETTINGS"
+  printf 'adb_enabled=1\ndevelopment_settings_enabled=0\n' >"$FAKE_SETTINGS"
+  printf 'mtp,adb' >"$FAKE_USB_FUNCS"
   cat >"$SCEN/mod/config.conf" <<'EOF'
 port=5555
 enabled=false
@@ -134,6 +169,7 @@ restore_adb_enabled=true
 retry=3
 retry_interval=10
 language=zh
+notification=true
 EOF
 
   cat >"$SCEN/mklistener.sh" <<'EOF'
@@ -218,7 +254,7 @@ assert_equals "$code" "0" "enable exits 0"
 assert_contains "$out" '"state":"ACTIVE"' "enable reports ACTIVE"
 assert_equals "$(sed -n 's/^service.adb.tcp.port=//p' "$FAKE_PROPS" | tail -n 1)" "5555" "property updated"
 assert_equals "$(sed -n 's/^adb_enabled=//p' "$SCEN/mod/config.conf" | tail -n 1)" "" "config file does not store adb_enabled"
-assert_equals "$(cat "$FAKE_SETTINGS")" "1" "adb_enabled set to 1"
+assert_equals "$(sed -n 's/^adb_enabled=//p' "$FAKE_SETTINGS")" "1" "adb_enabled set to 1"
 assert_contains "$(sh "$ADBCTL" status --json)" '"state":"ACTIVE"' "post-enable status is ACTIVE"
 out=$(sh "$ADBCTL" enable --port 5555)
 assert_contains "$out" '"idempotent":true' "second enable is idempotent"
@@ -338,12 +374,112 @@ assert_equals "$(grep -c -v '^#' "$MYADB_KEYS")" "2" "restore writes two keys"
 # 9b. idempotent enable keeps the original adb_enabled snapshot
 # ---------------------------------------------------------------------------
 new_env idempotent_snapshot
-printf '0' >"$FAKE_SETTINGS"
+printf 'adb_enabled=0\ndevelopment_settings_enabled=0\n' >"$FAKE_SETTINGS"
 sh "$ADBCTL" enable --port 5555 >/dev/null
 sh "$ADBCTL" enable --port 5555 >/dev/null
-assert_equals "$(cat "$FAKE_SETTINGS")" "1" "enable turns adb_enabled on"
+assert_equals "$(sed -n 's/^adb_enabled=//p' "$FAKE_SETTINGS")" "1" "enable turns adb_enabled on"
 sh "$ADBCTL" disable >/dev/null
-assert_equals "$(cat "$FAKE_SETTINGS")" "0" "disable restores the pre-enable adb_enabled snapshot"
+assert_equals "$(sed -n 's/^adb_enabled=//p' "$FAKE_SETTINGS")" "0" "disable restores the pre-enable adb_enabled snapshot"
+
+# ---------------------------------------------------------------------------
+# 9b2. keys import handles a file without a trailing newline
+# ---------------------------------------------------------------------------
+new_env keys_no_newline
+printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA no-newline@test' >"$MYADB_KEYS"
+cat >"$SCEN/extra.key" <<'EOF'
+BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB second@test
+EOF
+sh "$ADBCTL" keys import "$SCEN/extra.key" >/dev/null
+out=$(sh "$ADBCTL" keys list)
+assert_contains "$out" '"comment":"no-newline@test"' "import keeps the first key separate"
+assert_contains "$out" '"comment":"second@test"' "import appends a separate second key"
+
+# ---------------------------------------------------------------------------
+# 9c. keys list / remove
+# ---------------------------------------------------------------------------
+new_env keys_manage
+cat >"$SCEN/keys2" <<'EOF'
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA first@test
+BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB second@test
+EOF
+sh "$ADBCTL" keys import "$SCEN/keys2" >/dev/null
+out=$(sh "$ADBCTL" keys list)
+assert_contains "$out" '"id":' "keys list includes an id"
+assert_contains "$out" '"comment":"first@test"' "keys list includes the comment"
+assert_contains "$out" '"algorithm":"ADB"' "keys list includes the algorithm"
+id=$(printf '%s' "$out" | sed -n 's/.*"id":"\([^"]*\)"[^}]*"comment":"first@test".*/\1/p')
+assert_equals "$(printf '%s' "$id" | wc -c | tr -d ' ')" "47" "keys list exposes a colon-formatted md5 id"
+
+out=$(sh "$ADBCTL" keys remove "$id")
+code=$?
+assert_equals "$code" "0" "keys remove succeeds"
+assert_contains "$out" '"removed":1' "keys remove reports one removal"
+backup=$(printf '%s' "$out" | sed -n 's/.*"backup":"\([^"]*\)".*/\1/p')
+if [ -n "$backup" ] && [ -f "$backup" ]; then
+  ok "keys remove created a backup"
+else
+  bad "keys remove did not create a backup"
+fi
+assert_equals "$(grep -c -v '^#' "$MYADB_KEYS")" "1" "keys remove leaves one key"
+
+out=$(sh "$ADBCTL" keys remove "NO-SUCH-ID")
+code=$?
+assert_equals "$code" "15" "keys remove rejects an unknown id"
+
+# ---------------------------------------------------------------------------
+# 9d. USB status and switches
+# ---------------------------------------------------------------------------
+new_env usb
+out=$(sh "$ADBCTL" usb status)
+assert_contains "$out" '"supports_usb":true' "usb status reports support"
+assert_contains "$out" '"functions":["mtp","adb"]' "usb status lists functions"
+assert_contains "$out" '"mode":"mtp"' "usb status detects mode"
+assert_contains "$out" '"developer_enabled":0' "usb status reads developer options"
+
+out=$(sh "$ADBCTL" usb set developer on)
+assert_contains "$out" '"value":1' "usb set developer on writes value"
+assert_equals "$(sed -n 's/^development_settings_enabled=//p' "$FAKE_SETTINGS")" "1" "developer option persisted"
+
+sh "$ADBCTL" usb set adb off >/dev/null
+out=$(sh "$ADBCTL" usb mode ptp)
+assert_contains "$out" '"mode":"ptp"' "usb mode ptp applies"
+assert_equals "$(cat "$FAKE_USB_FUNCS")" "ptp" "usb mode ptp excludes adb when disabled"
+
+sh "$ADBCTL" usb set adb on >/dev/null
+out=$(sh "$ADBCTL" usb mode rndis)
+assert_contains "$out" '"mode":"rndis"' "usb mode rndis applies"
+assert_equals "$(cat "$FAKE_USB_FUNCS")" "rndis,adb" "usb mode keeps adb when enabled"
+
+out=$(sh "$ADBCTL" usb mode charging)
+assert_contains "$out" '"mode":"charging"' "usb mode charging applies"
+assert_equals "$(cat "$FAKE_USB_FUNCS")" "" "usb charging clears functions"
+
+out=$(sh "$ADBCTL" usb mode bogus)
+code=$?
+assert_equals "$code" "15" "usb mode rejects an unknown mode"
+
+# ---------------------------------------------------------------------------
+# 9e. shell status notification
+# ---------------------------------------------------------------------------
+new_env notify
+sh "$SCEN/create_listener.sh" 5555 0 4242 25555 adbd
+printf 'service.adb.tcp.port=5555\n' >>"$FAKE_PROPS"
+: >"$FAKE_CMD_LOG"
+out=$(sh "$ADBCTL" notify)
+assert_contains "$out" '"ok":true' "notify command succeeds"
+assert_contains "$(cat "$FAKE_CMD_LOG")" 'notification post' "notify posts a shell notification"
+assert_contains "$(cat "$FAKE_CMD_LOG")" 'MyADB · 运行中' "notify title reflects active state"
+assert_contains "$(cat "$FAKE_CMD_LOG")" '端口 5555' "notify text includes the port"
+assert_contains "$(cat "$FAKE_CMD_LOG")" '监听正常' "notify text includes listener state"
+assert_contains "$(cat "$FAKE_CMD_LOG")" '192.168.1.42' "notify text includes the device ip"
+sh "$ADBCTL" config set notification false >/dev/null
+assert_equals "$(sh "$ADBCTL" config get notification | sed -n 's/.*"value":"\([^"]*\)".*/\1/p')" "false" "notification config can be disabled"
+sh "$ADBCTL" notify-loop >/dev/null
+if [ -f "$MYADB_MODDIR/run/notify.pid" ]; then
+  bad "notify-loop removes its pid file when disabled"
+else
+  ok "notify-loop removes its pid file when disabled"
+fi
 
 # ---------------------------------------------------------------------------
 # 10. log
