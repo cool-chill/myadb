@@ -650,3 +650,17 @@ myadb/
 | 工期 | 9.5 人日，按 10–11 排期 |
 
 本方案可直接作为开发输入。
+
+---
+
+## 16. 实现增补（2026-11-28）
+
+在 v3.0 定稿基础上，实际实现增加了以下能力，均已同步到 `README.md`、用户指南与 `AGENTS.md`：
+
+- **已授权设备管理**：新增 `keys list` 与 `keys remove <ID>`；WebUI 设置页列出注释、MD5 指纹与算法，可删除单条授权并自动备份。
+- **USB 控制**：新增 `usb status`、`usb set adb|developer on|off`、`usb mode charging|mtp|ptp|rndis|midi`；WebUI 设置页提供对应开关与模式按钮。
+- **常驻通知**：新增 `notification` 配置（默认 `true`）与 `notify` / `notify-daemon` / `notify-loop` 命令；`service.sh` 在开机应用后启动守护进程，每 15 秒发布状态通知。
+  - Android 11+ 的 shell 通知无法设置点击 Intent（`getIntentSender` 需要 uid 1000），因此通知只展示状态，WebUI 仍从管理器进入；本方案继续不引入 APK。
+- **文档与测试**：新增 `docs/TEST_REPORT.md`，记录 Pixel 7 / Android 17 / KernelSU 与 Android 11 / Magisk 的真机结果；`CLAUDE.md` 改为 `@AGENTS.md` 引用。
+
+本增补不改变第 1–15 节的核心架构与安全边界。

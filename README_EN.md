@@ -51,7 +51,7 @@ Source repository: <https://github.com/cool-chill/myadb>
 | WebUI | Manager must support module `webroot` (KernelSU manager or MMRL) |
 | Without WebUI | `action.sh` prints the status JSON; the CLI still exposes every feature |
 | WebView | Baseline Chromium 111; older versions get a warning banner |
-| Verified | Pixel 7 / Android 17 / KernelSU 3.2.5; Android 11 / Magisk; Linux fake `/proc` integration tests and WebUI mock tests |
+| Verified | Pixel 7 / Android 17 / KernelSU 3.2.5 (with WebUI); Android 11 / Magisk (CLI and notifications); Linux fake `/proc` integration tests and WebUI mock tests |
 
 ## Installation
 
@@ -133,6 +133,8 @@ Executable inside the module: `/data/adb/modules/myadb/bin/adbctl`
 | `adbctl usb status` | USB debugging, developer options and current USB mode |
 | `adbctl usb set adb\|developer on\|off` | Toggle USB debugging or developer options |
 | `adbctl usb mode charging\|mtp\|ptp\|rndis\|midi` | Change the USB mode |
+| `adbctl notify` | Publish one status notification now |
+| `adbctl notify-daemon` | Start or stop the notification daemon |
 | `adbctl config [get KEY\|set KEY VALUE]` | Read or update config |
 
 Common examples:
@@ -367,10 +369,11 @@ shellcheck -s sh core/adbctl.sh module/*.sh tests/*.sh
                                                           └─────────┘
 ```
 
-Two principles:
+Three principles:
 
 1. **One source of business logic**: `adbctl` is the only source of truth. `service.sh`, `boot-completed.sh`, `action.sh` and the WebUI all call it.
 2. **Measured state**: parse `/proc` and verify the adbd fd inode; never trust `getprop`.
+3. **Notifications are a side channel**: `service.sh` starts `notify-daemon`, which polls `status` every 15 seconds and posts a shell notification. State decisions still come from `adbctl`.
 
 Listener verification:
 
@@ -392,7 +395,8 @@ myadb/
 │   ├── design.md         # design document
 │   ├── USER_GUIDE.md     # user guide (Chinese)
 │   ├── USER_GUIDE_EN.md  # user guide (English)
-│   └── CHANGELOG.md      # changelog
+│   ├── CHANGELOG.md      # changelog
+│   └── TEST_REPORT.md    # real-device test report
 ├── AGENTS.md             # contributor / AI takeover notes
 ├── CLAUDE.md             # Claude Code takeover notes
 └── .github/workflows/    # CI

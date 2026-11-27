@@ -51,7 +51,7 @@ MyADB 是一个 KernelSU / Magisk / APatch 模块，用于控制系统 adbd 的 
 | WebUI | 需要管理器支持模块 `webroot`（KernelSU 管理器或 MMRL） |
 | 无 WebUI | `action.sh` 会输出状态 JSON，仍可完整使用命令行 |
 | WebView | 兼容基线 Chromium 111，更低版本显示提示条 |
-| 已验证 | Pixel 7 / Android 17 / KernelSU 3.2.5；Android 11 / Magisk；Linux 伪 `/proc` 集成测试与 WebUI mock 测试 |
+| 已验证 | Pixel 7 / Android 17 / KernelSU 3.2.5（含 WebUI）；Android 11 / Magisk（CLI 与通知）；Linux 伪 `/proc` 集成测试与 WebUI mock 测试 |
 
 ## 安装
 
@@ -133,6 +133,8 @@ adb devices
 | `adbctl usb status` | USB 调试、开发者选项与当前 USB 模式 |
 | `adbctl usb set adb\|developer on\|off` | 切换 USB 调试或开发者选项 |
 | `adbctl usb mode charging\|mtp\|ptp\|rndis\|midi` | 切换 USB 模式 |
+| `adbctl notify` | 立即发布一条状态通知 |
+| `adbctl notify-daemon` | 启动或停止通知守护进程 |
 | `adbctl config [get KEY\|set KEY VALUE]` | 读取或修改配置 |
 
 常用示例：
@@ -367,10 +369,11 @@ shellcheck -s sh core/adbctl.sh module/*.sh tests/*.sh
                                                           └─────────┘
 ```
 
-两条原则：
+三条原则：
 
 1. **业务逻辑只有一份**：`adbctl` 是唯一事实来源，`service.sh`、`boot-completed.sh`、`action.sh`、WebUI 都调它。
 2. **状态以实测为准**：解析 `/proc` 并用 adbd fd inode 校验，不信任 `getprop`。
+3. **通知是旁路**：`service.sh` 启动 `notify-daemon`，每 15 秒轮询 `status` 并发布 shell 通知；状态判断仍由 `adbctl` 提供。
 
 监听校验算法：
 
@@ -392,7 +395,8 @@ myadb/
 │   ├── design.md         # 设计方案
 │   ├── USER_GUIDE.md     # 用户指南（中文）
 │   ├── USER_GUIDE_EN.md  # 用户指南（英文）
-│   └── CHANGELOG.md      # 变更记录
+│   ├── CHANGELOG.md      # 变更记录
+│   └── TEST_REPORT.md    # 真机测试记录与性能数据
 ├── AGENTS.md             # 贡献者 / AI 接手说明
 ├── CLAUDE.md             # Claude Code 接手说明
 └── .github/workflows/    # CI

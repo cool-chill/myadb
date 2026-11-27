@@ -155,6 +155,7 @@ sh tests/adbctl.test.sh
 - `$MODDIR/state`：`state`、`port`、`prev_port`、`prev_adb_enabled`、`timestamp`。
 - `$MODDIR/log/adbctl.log`：滚动 200 行。
 - `$MODDIR/backup/`：密钥备份。
+- `$MODDIR/run/notify.pid`：通知守护进程 PID；不存在表示未运行。
 
 监听校验：
 
@@ -381,7 +382,7 @@ git push origin v1.0.0
 新接手者按顺序完成：
 
 1. 读 `README.md`、`docs/USER_GUIDE.md`、`docs/design.md`。
-2. 读本文件与 `CLAUDE.md`。
+2. 读本文件；`CLAUDE.md` 通过 `@AGENTS.md` 引用本文件。
 3. 安装 Node 依赖，运行全部检查，确认基线通过。
 4. 阅读 `core/adbctl.sh` 的 `cmd_status`、`cmd_enable`、`scan_listeners`。
 5. 阅读 `webui/src/lib/bridge.ts` 与 `schema.ts`。

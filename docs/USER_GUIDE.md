@@ -130,6 +130,9 @@ su -c '/data/adb/modules/myadb/bin/adbctl boot on --port 5555'
 | 界面语言 | 中文 / English，写入 `language`，立即生效 |
 | 开启时同步打开系统 USB 调试 | `toggle_adb_enabled` |
 | 关闭时恢复原 USB 调试状态 | `restore_adb_enabled` |
+| 已授权设备 | 列出公钥注释、MD5 指纹，可删除单条授权 |
+| USB 与设备 | USB 调试、开发者选项、仅充电 / MTP / PTP / RNDIS |
+| 常驻通知 | 每 15 秒更新 ADB 状态；点击无动作 |
 | ADB 密钥路径 | 导入/备份/恢复使用的文件路径，默认 `/sdcard/adb_keys` |
 | 清除密钥 | 二次确认，系统先自动备份再清空 |
 

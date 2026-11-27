@@ -130,6 +130,9 @@ su -c '/data/adb/modules/myadb/bin/adbctl boot on --port 5555'
 | Language | Chinese / English, written to `language`, applied immediately |
 | Set system USB debugging when enabling | `toggle_adb_enabled` |
 | Restore USB debugging state when disabling | `restore_adb_enabled` |
+| Authorized devices | list key comments and MD5 fingerprints; delete a single authorization |
+| USB and device | USB debugging, developer options, charging / MTP / PTP / RNDIS |
+| Ongoing notification | refresh ADB status every 15 seconds; tapping does nothing |
 | ADB key path | Path used by import/backup/restore, default `/sdcard/adb_keys` |
 | Clear keys | Second confirmation; the system backs up first, then empties |
 
