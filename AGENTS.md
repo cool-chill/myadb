@@ -2,7 +2,7 @@
 
 本文件面向在本仓库工作的 AI Agent、协作者与维护者，说明项目目标、架构、命令、修改流程、测试与发布要求。目标：任何人或 Agent 读完本文件即可独立接手。
 
-最后更新：2026-11-27
+最后更新：2026-11-28
 
 ## 1. 项目是什么
 
@@ -12,7 +12,9 @@ MyADB 是一个 KernelSU / Magisk / APatch 模块，用于控制系统 adbd 的�
 - 开机自启，失败重试与回滚。
 - 通过 `/proc/net/tcp{,6}` 与 adbd fd inode 校验真实监听状态。
 - 端口占用检测，报告占用者 uid/pid。
-- ADB 密钥导入、备份、恢复、清除。
+- ADB 密钥导入、备份、恢复、清除；已授权设备列表与单条删除。
+- USB 调试、开发者选项与 USB 模式控制。
+- 常驻状态通知（shell，15 秒刷新）。
 - 中英双语 WebUI，默认中文。
 
 源码仓库：<https://github.com/cool-chill/myadb>
@@ -39,10 +41,10 @@ MyADB 是一个 KernelSU / Magisk / APatch 模块，用于控制系统 adbd 的�
 | `module/module.prop` | 模块元数据（id、版本、作者、描述） |
 | `module/customize.sh` | 安装时初始化配置与权限 |
 | `module/post-fs-data.sh` | 早期目录准备，不动 adbd |
-| `module/service.sh` | 等 `sys.boot_completed` 后调用 `adbctl boot-apply` |
+| `module/service.sh` | 等 `sys.boot_completed` 后调用 `adbctl boot-apply` 与 `adbctl notify-daemon` |
 | `module/boot-completed.sh` | 补一次状态校验并刷新管理器描述 |
 | `module/action.sh` | 打开 WebUI，或输出状态 JSON |
-| `module/uninstall.sh` | 关闭端口并清理运行期文件 |
+| `module/uninstall.sh` | 关闭端口、停止通知守护进程并清理运行期文件 |
 | `module/bin/adbctl` | 生成物，与 `core/adbctl.sh` 保持一致 |
 | `module/webroot/` | 生成物，WebUI 静态资源 |
 | `webui/src/lib/bridge.ts` | 原生 `ksu` 封装、命令拼装、开发 mock 切换 |
@@ -282,9 +284,12 @@ cd webui && npm run i18n:check
 cd webui && npm test
 cd webui && npm run build
 shellcheck -s sh core/adbctl.sh module/*.sh tests/*.sh
+shellcheck -s bash scripts/build.sh
 sh tests/adbctl.test.sh
 diff -u core/adbctl.sh module/bin/adbctl
 ```
+
+当前基线（v1.0.0）：adbctl 集成测试 87 项、Vitest 30 项、i18n 143 键。数字会随功能变化，以命令结果为准。
 
 ## 9. CI
 
@@ -292,7 +297,7 @@ diff -u core/adbctl.sh module/bin/adbctl
 |---|---|---|
 | `.github/workflows/webui.yml` | `webui/**` | npm ci、lint、typecheck、i18n、test、build、上传 webroot |
 | `.github/workflows/module.yml` | `core/**`、`module/**`、`tests/**` | shellcheck、集成测试、检查 adbctl 副本同步 |
-| `.github/workflows/release.yml` | `v*` tag | 构建、测试、同步 adbctl、打包 zip、创建 GitHub Release |
+| `.github/workflows/release.yml` | `v*` tag | shellcheck、集成测试、WebUI 检查与构建、同步 adbctl、打包 zip、创建 GitHub Release |
 
 CI 通过是合并前提。
 
@@ -320,16 +325,16 @@ install -m 755 core/adbctl.sh module/bin/adbctl
 8. 提交并打 tag：
 
 ```bash
-# 提交发布内容
+# 提交发布内容（示例为下一个版本）
 git add .
-git commit -m "chore(release): v1.0.0"
+git commit -m "chore(release): v1.1.0"
 
 # 创建 tag
-git tag v1.0.0
+git tag v1.1.0
 
 # 推送分支与 tag
 git push origin main
-git push origin v1.0.0
+git push origin v1.1.0
 ```
 
 9. GitHub Actions 会自动创建 Release 并上传 zip。
@@ -357,7 +362,9 @@ git push origin v1.0.0
 | 通知发布身份 | 必须通过 `su 2000 -c` 以 shell 身份发布；root 直接发布会失败 |
 | USB 模式切换 | 会重置 USB 接口，可能短暂断开 USB/ADB；失败时返回 15 |
 | 密钥文件换行 | 导入前必须确保已有文件以换行结尾，否则新行会拼接到上一条注释 |
-| 卸载 | 不删除系统 `adb_keys` |
+| 通知守护进程 | adbd 重启或进程被杀后可能退出；执行 `notify-daemon` 或重启模块恢复 |
+| 通知关闭 | 停止刷新不会移除已发布的通知，需要手动划掉 |
+| 卸载 | 不删除系统 `adb_keys`；已发布通知可能残留，可手动划掉 |
 
 ## 12. 提交与分支
 
@@ -381,12 +388,22 @@ git push origin v1.0.0
 
 新接手者按顺序完成：
 
-1. 读 `README.md`、`docs/USER_GUIDE.md`、`docs/design.md`。
+1. 读 `README.md` / `README_EN.md`、`docs/USER_GUIDE.md` / `docs/USER_GUIDE_EN.md`、`docs/design.md`。
 2. 读本文件；`CLAUDE.md` 通过 `@AGENTS.md` 引用本文件。
 3. 安装 Node 依赖，运行全部检查，确认基线通过。
 4. 阅读 `core/adbctl.sh` 的 `cmd_status`、`cmd_enable`、`scan_listeners`。
 5. 阅读 `webui/src/lib/bridge.ts` 与 `schema.ts`。
 6. 在浏览器运行 `npm run dev`，确认 mock 页面可用。
-7. 在真机刷入 `dist/myadb-v1.0.0.zip`，验证开机自启、端口切换、回滚、WebUI。
-8. 修改一处小文案或测试，完整跑一遍检查与发布流程。
-9. 确认自己可以独立完成一次版本发布。
+7. 阅读 `docs/TEST_REPORT.md`，了解真实设备结果与已知环境限制。
+8. 从 Releases 下载 `myadb-v1.0.0.zip`，或运行 `./scripts/build.sh` 生成后刷入，验证开机自启、端口切换、回滚、WebUI、USB 与通知。
+9. 修改一处小文案或测试，完整跑一遍检查与发布流程。
+10. 确认自己可以独立完成一次版本发布。
+
+## 15. 当前发布状态
+
+- 最新版本：`v1.0.0`，tag 固定指向 `30917f9`；后续 `main` 文档提交不影响已发布资产。
+- GitHub Release：<https://github.com/cool-chill/myadb/releases/tag/v1.0.0>
+- 发布资产：`myadb-v1.0.0.zip`
+- Release workflow：run `46059224861`，状态 `success`。
+- CI：`module`、`webui`、`release` 最近一次均为 `success`。
+- 下一次发布：先更新 `module/module.prop` 的 `version` / `versionCode` 与 `docs/CHANGELOG.md`，再按第 10 节打新 tag；不要移动已发布的 `v1.0.0` tag。

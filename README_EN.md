@@ -6,6 +6,8 @@ MyADB is a KernelSU / Magisk / APatch module that controls the TCP port of the s
 
 Source repository: <https://github.com/cool-chill/myadb>
 
+Latest release: <https://github.com/cool-chill/myadb/releases/tag/v1.0.0>
+
 ## Contents
 
 - [Features](#features)
@@ -55,7 +57,7 @@ Source repository: <https://github.com/cool-chill/myadb>
 
 ## Installation
 
-1. Download `myadb-v*.zip` from Releases.
+1. Download `myadb-v*.zip` from [Releases](https://github.com/cool-chill/myadb/releases).
 2. Install the module in KernelSU / Magisk / APatch.
 3. Reboot.
 4. Open the MyADB WebUI in the manager, or use the command line.
@@ -347,6 +349,7 @@ sh tests/adbctl.test.sh
 
 # ShellCheck
 shellcheck -s sh core/adbctl.sh module/*.sh tests/*.sh
+shellcheck -s bash scripts/build.sh
 ```
 
 `src/lib/bridge.ts` returns fake data in development so the UI can be debugged in a normal browser. For device testing, package the build output into the module zip, flash it, and open the WebUI from the manager. When only the WebUI changes, you can also `adb push` the new `module/webroot` and reopen the WebUI.

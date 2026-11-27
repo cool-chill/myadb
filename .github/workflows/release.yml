@@ -18,6 +18,11 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: webui/package-lock.json
+      - name: Shell checks
+        run: |
+          shellcheck -s sh core/adbctl.sh module/*.sh tests/*.sh
+          shellcheck -s bash scripts/build.sh
+          sh tests/adbctl.test.sh
       - name: Build WebUI
         working-directory: webui
         run: |

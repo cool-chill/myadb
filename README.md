@@ -6,6 +6,8 @@ MyADB 是一个 KernelSU / Magisk / APatch 模块，用于控制系统 adbd 的 
 
 源码仓库：<https://github.com/cool-chill/myadb>
 
+最新发布：<https://github.com/cool-chill/myadb/releases/tag/v1.0.0>
+
 ## 目录
 
 - [功能](#功能)
@@ -55,7 +57,7 @@ MyADB 是一个 KernelSU / Magisk / APatch 模块，用于控制系统 adbd 的 
 
 ## 安装
 
-1. 从 Releases 下载 `myadb-v*.zip`。
+1. 从 [Releases](https://github.com/cool-chill/myadb/releases) 下载 `myadb-v*.zip`。
 2. 在 KernelSU / Magisk / APatch 管理器中安装模块。
 3. 重启设备。
 4. 在管理器中打开 MyADB 的 WebUI，或通过命令行操作。
@@ -347,6 +349,7 @@ sh tests/adbctl.test.sh
 
 # ShellCheck
 shellcheck -s sh core/adbctl.sh module/*.sh tests/*.sh
+shellcheck -s bash scripts/build.sh
 ```
 
 `src/lib/bridge.ts` 在开发模式下返回假数据，方便在浏览器中调试 UI。真机验证时把构建产物打入模块 zip，刷入后从管理器打开 WebUI。仅修改 WebUI 时，也可以临时用 `adb push` 覆盖 `module/webroot` 后重开 WebUI。

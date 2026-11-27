@@ -4,6 +4,8 @@
 
 ## v1.0.0 - 2026-11-28
 
+GitHub Release：<https://github.com/cool-chill/myadb/releases/tag/v1.0.0>
+
 ### 新增
 
 - `adbctl`：状态查询、开启/关闭、自定义端口、开机自启、诊断、日志、密钥管理、配置读写。

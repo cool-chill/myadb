@@ -22,7 +22,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: ShellCheck
-        run: shellcheck -s sh core/adbctl.sh module/*.sh tests/*.sh
+        run: |
+          shellcheck -s sh core/adbctl.sh module/*.sh tests/*.sh
+          shellcheck -s bash scripts/build.sh
       - name: Integration tests
         run: sh tests/adbctl.test.sh
       - name: Check adbctl copy is in sync

@@ -486,6 +486,7 @@ getprop service.adb.tcp.port
 1. 在管理器中卸载。
 2. `uninstall.sh` 尝试关闭端口，删除日志、备份、state、config。
 3. `/data/misc/adb/adb_keys` 不删除。
+4. 通知守护进程会停止；已显示的通知可能残留，可手动划掉。
 
 ### 12.3 恢复
 
@@ -506,6 +507,7 @@ setprop ctl.restart adbd
 - 不要把 `adb_keys` 备份上传到公共位置。
 - 不要在公共 Wi-Fi 下长期开启。
 - 本工具不会绕过系统安全策略；遇到 `listen_addrs` 接管时按设计停止。
+- 常驻通知由 shell 发布，系统可能显示为「Shell」；它只展示状态，不包含点击跳转。
 
 ## 15. FAQ
 

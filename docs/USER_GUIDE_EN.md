@@ -486,6 +486,7 @@ getprop service.adb.tcp.port
 1. Remove the module in the manager.
 2. `uninstall.sh` tries to turn the port off and removes logs, backups, state and config.
 3. `/data/misc/adb/adb_keys` is not removed.
+4. The notification daemon stops; an existing notification may remain until swiped.
 
 ### 12.3 Recovery
 
@@ -506,6 +507,7 @@ setprop ctl.restart adbd
 - Never upload `adb_keys` backups to public locations.
 - Avoid leaving it enabled on public Wi-Fi.
 - The tool never bypasses system security policy; when `listen_addrs` takes over, it stops by design.
+- The ongoing notification is posted by shell and may appear as "Shell"; it is display-only and has no click action.
 
 ## 15. FAQ
 
